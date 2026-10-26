@@ -13,6 +13,7 @@
   --accent-ink: #1d1400;
   --soccer: #4fb3ff;
   --bball: #ff8a3d;
+  --hockey: #8fd3ff;
   --good: #3ccf8e;
   --bad: #ff5f6d;
   --warn: #ffb347;
@@ -28,14 +29,14 @@
   :root:not([data-theme="dark"]) {
     --bg: #f3f5f9; --bg-2: #eaeef5; --surface: #ffffff; --surface-2: #f4f6fa; --line: #dfe4ee; --line-2: #c9d1df;
     --fg: #0f1623; --muted: #56627a; --faint: #8a94a8; --accent: #c98a00; --accent-ink: #ffffff;
-    --soccer: #1f7fd1; --bball: #d9631a; --good: #13996a; --bad: #d63848; --warn: #c27a00;
+    --soccer: #1f7fd1; --bball: #d9631a; --hockey: #3a8fb7; --good: #13996a; --bad: #d63848; --warn: #c27a00;
     --glow: rgba(201, 138, 0, .10); --shadow: 0 10px 30px -16px rgba(20, 30, 60, .25); color-scheme: light;
   }
 }
 :root[data-theme="light"] {
   --bg: #f3f5f9; --bg-2: #eaeef5; --surface: #ffffff; --surface-2: #f4f6fa; --line: #dfe4ee; --line-2: #c9d1df;
   --fg: #0f1623; --muted: #56627a; --faint: #8a94a8; --accent: #c98a00; --accent-ink: #ffffff;
-  --soccer: #1f7fd1; --bball: #d9631a; --good: #13996a; --bad: #d63848; --warn: #c27a00;
+  --soccer: #1f7fd1; --bball: #d9631a; --hockey: #3a8fb7; --good: #13996a; --bad: #d63848; --warn: #c27a00;
   --glow: rgba(201, 138, 0, .10); --shadow: 0 10px 30px -16px rgba(20, 30, 60, .25); color-scheme: light;
 }
 
@@ -138,6 +139,9 @@ button { font: inherit; color: inherit; }
 .sig::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--sport, var(--accent)); opacity: .9; }
 .sig[data-sport="soccer"] { --sport: var(--soccer); }
 .sig[data-sport="basketball"] { --sport: var(--bball); }
+.sig[data-sport="hockey"] { --sport: var(--hockey); }
+.meter { height: 6px; border-radius: 99px; background: var(--surface-2); overflow: hidden; }
+.meter i { display: block; height: 100%; background: var(--accent); border-radius: 99px; }
 .sig-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
 .lg { display: inline-flex; align-items: center; gap: 7px; font-weight: 700; min-width: 0; }
 .lg i { width: 7px; height: 7px; border-radius: 2px; background: var(--sport, var(--accent)); flex: none; }
@@ -227,6 +231,7 @@ tr:hover td { background: color-mix(in srgb, var(--surface-2) 60%, transparent);
 .ins[data-type="peso"] .nd, .ins[data-type="limiar"] .nd { background: var(--soccer); }
 .ins[data-type="mercado"] .nd { background: var(--bball); }
 .ins[data-type="estudo"] .nd { background: var(--muted); }
+.ins[data-type="conhecimento"] .nd, .ins[data-type="treino"] .nd, .ins[data-type="memoria"] .nd { background: var(--hockey); }
 .ins .tx { font-size: 14px; line-height: 1.55; max-width: 78ch; }
 .ins .when { font: 600 11px var(--f-mono); color: var(--faint); margin-top: 3px; display: flex; gap: 10px; flex-wrap: wrap; }
 .tag { font: 800 10px var(--f-body); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }

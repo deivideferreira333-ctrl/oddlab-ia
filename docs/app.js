@@ -29,7 +29,26 @@
   const MARKETS = {
     'soccer:1x2': 'Resultado (1X2)', 'soccer:ou': 'Gols Over/Under',
     'basketball:ml': 'Vencedor (ML)', 'basketball:spread': 'Handicap (Spread)', 'basketball:total': 'Pontos Over/Under',
+    'hockey:ml': 'Vencedor (ML)', 'hockey:total': 'Gols Over/Under',
   };
+  const SIGNAL_MARKETS = ['soccer:ou', 'basketball:total', 'hockey:total'];
+  const SPORTS = { soccer: 'Futebol', basketball: 'Basquete', hockey: 'Hóquei' };
+  const isTotal = (k) => k.endsWith(':ou') || k.endsWith(':total');
+  const mLabel = (k) => `${MARKETS[k] || k} · ${SPORTS[k.split(':')[0]]}`;
+  function normCdf(x) {
+    const t = 1 / (1 + 0.3275911 * Math.abs(x) / Math.SQRT2);
+    const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-(x * x) / 2);
+    return x >= 0 ? (1 + y) / 2 : (1 - y) / 2;
+  }
+  // probabilidade de over em várias linhas (normal no basquete; Poisson já calculado no futebol e no hóquei)
+  function totalLines(ev) {
+    const p = ev.analysis?.pred; if (!p) return [];
+    if (ev.sport === 'basketball') {
+      const c = Math.floor(p.total) + 0.5;
+      return [-10, -7, -5, -3, 0, 3, 5, 7, 10].map((d) => ({ line: c + d, over: 1 - normCdf((c + d - p.total) / p.sigT) }));
+    }
+    return Object.entries(p.over || {}).map(([l, v]) => ({ line: +l, over: v }));
+  }
   const STATUS = { aberto: 'Aberto', travado: 'Em jogo', green: 'Green', red: 'Red', void: 'Devolvido', cancelado: 'Retirado' };
 
   const D = { meta: null, feed: [], signals: [], learning: { insights: [], params: [] }, ratings: null };
@@ -125,6 +144,7 @@
       staked, profit, roi: staked ? profit / staked : null, series, dd,
       avgOdd: settled.length ? settled.reduce((a, s) => a + s.odd, 0) / settled.length : null,
       avgEV: settled.length ? settled.reduce((a, s) => a + s.ev, 0) / settled.length : null, settled,
+      clv: (() => { const c = settled.filter((s) => s.clv != null); return c.length ? c.reduce((a, s) => a + s.clv, 0) / c.length : null; })(),
     };
   }
   const groupBy = (arr, f) => arr.reduce((m, x) => ((m[f(x)] ??= []).push(x), m), {});
@@ -179,7 +199,7 @@
   }
 
   function insightItem(i) {
-    const T = { zebra: 'Zebra', sinal: 'Sinal', peso: 'Peso do modelo', limiar: 'Critério de valor', mercado: 'Mercado', estudo: 'Estudo', resultado: 'Resultados', cancelado: 'Sinal retirado', bootstrap: 'Treino', fonte: 'Fonte de dados' };
+    const T = { conhecimento: 'Conhecimento', treino: 'Treino', memoria: 'Memória', zebra: 'Total fora do esperado', sinal: 'Sinal', peso: 'Peso do modelo', limiar: 'Critério de valor', mercado: 'Mercado', estudo: 'Estudo', resultado: 'Resultados', cancelado: 'Sinal retirado', bootstrap: 'Treino', fonte: 'Fonte de dados' };
     return `<div class="ins" data-type="${esc(i.type)}"><span class="nd"></span><div><div class="tx">${esc(i.text)}</div>
       <div class="when"><span class="tag">${esc(T[i.type] || i.type)}</span><span>ciclo #${i.cycle}</span><span>${dt(i.t, { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</span></div></div></div>`;
   }
@@ -192,11 +212,10 @@
     let tri = '';
     if (a) {
       const p = a.pred;
-      const cells = ev.sport === 'soccer'
-        ? [['1', p.home], ['X', p.draw], ['2', p.away]]
-        : [['Casa', p.home], ['Fora', p.away], ['Total', null, p.total]];
-      const max = Math.max(...cells.map((c) => c[1] || 0));
-      tri = `<div class="tri">${cells.map(([l, v, t]) => `<div class="${v === max ? 'hot' : ''}"><small>${l}</small>${v != null ? pct(v, 0) : (t ? t.toFixed(1) : '—')}</div>`).join('')}</div>`;
+      const ov = a.markets.find((m) => isTotal(m.marketKey) && m.side === 'over');
+      const proj = p.total ?? (p.xgHome + p.xgAway);
+      const o = ov ? ov.p : null;
+      tri = `<div class="tri"><div><small>PROJ.</small>${proj.toFixed(ev.sport === 'basketball' ? 1 : 2)}</div>${ov ? `<div class="${o >= 0.5 ? 'hot' : ''}"><small>O ${ov.line}</small>${pct(o, 0)}</div><div class="${o < 0.5 ? 'hot' : ''}"><small>U ${ov.line}</small>${pct(1 - o, 0)}</div>` : ''}</div>`;
     } else tri = '<div class="tri"><div><small>IA</small>—</div></div>';
     const when = isLive ? `<span class="live-tag">AO VIVO</span><b>${esc(ev.detail || '')}</b>` : ev.completed ? `<span>Encerrado</span><b>${hm(ev.date)}</b>` : `<span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(ev.leagueName)}</span><b>${hm(ev.date)}</b>`;
     const sc = (t) => (ev.state !== 'pre' && t.score != null ? `<span class="s">${t.score}</span>` : '');
@@ -212,21 +231,24 @@
   function aiRead(ev) {
     const a = ev.analysis; if (!a) return 'Sem projeção salva para este jogo.';
     const p = a.pred, out = [];
-    const best = (a.markets || []).filter((m) => m.ev != null && m.pMarket != null).sort((x, y) => y.ev - x.ev)[0];
+    const best = (a.markets || []).filter((m) => SIGNAL_MARKETS.includes(m.marketKey) && m.ev != null && m.pMarket != null).sort((x, y) => y.ev - x.ev)[0];
     if (ev.sport === 'soccer') {
       out.push(`O modelo projeta ${p.xgHome.toFixed(2)} × ${p.xgAway.toFixed(2)} em gols esperados, com ${ev.home.name} vencendo em ${pct(p.home)}, empate em ${pct(p.draw)} e ${ev.away.name} em ${pct(p.away)}.`);
       out.push(`Placar mais provável: ${p.scores?.[0]?.score} (${pct(p.scores?.[0]?.p)}). Ambos marcam: ${pct(p.btts)}. Over 2.5: ${pct(p.over?.['2.5'])}.`);
+    } else if (ev.sport === 'hockey') {
+      out.push(`Gols esperados no tempo normal: ${p.xgHome.toFixed(2)} × ${p.xgAway.toFixed(2)}. Chance de empate no tempo normal (prorrogação, +1 gol no total): ${pct(p.regDraw)}. Total projetado: ${p.total.toFixed(2)} gols.`);
+      out.push(`Over 5.5 em ${pct(p.over?.['5.5'])}, over 6.5 em ${pct(p.over?.['6.5'])}.${p.b2bHome || p.b2bAway ? ` ${p.b2bHome ? ev.home.name : ev.away.name} joga em back-to-back, e a IA considera isso no total.` : ''}`);
     } else {
       const fav = p.margin >= 0 ? ev.home.name : ev.away.name;
       out.push(`Placar projetado ${p.ptsHome.toFixed(0)} – ${p.ptsAway.toFixed(0)}: ${fav} favorito por ${Math.abs(p.margin).toFixed(1)} pontos, total estimado de ${p.total.toFixed(1)}.`);
-      out.push(`Vitória do mandante em ${pct(p.home)}. Desvio típico da margem nessa liga: ±${p.sigM.toFixed(1)} pts.`);
+      out.push(`Desvio típico do total nessa liga: ±${p.sigT.toFixed(1)} pts.${p.b2bHome || p.b2bAway ? ` Back-to-back: ${[p.b2bHome && ev.home.name, p.b2bAway && ev.away.name].filter(Boolean).join(' e ')}.` : ''}`);
     }
     if (best) {
       const diff = best.pModel - best.pMarket;
       out.push(best.ev > 0
-        ? `Maior desvio contra o mercado: ${best.label} (${best.market}). O mercado precifica ${pct(best.pMarket)}, a IA estima ${pct(best.p)} (modelo puro ${pct(best.pModel)}). Odd ${odd(best.odd)} contra justa ${odd(best.fair)}: EV ${sgn(best.ev * 100, 1)}%.`
-        + (best.ev > 0 && (best.odd > 6.5 || best.odd < 1.35) ? ' Essa odd fica fora da faixa aceita para sinal (1,35 a 6,50), então não vira entrada.' : '')
-        : `Nenhuma opção com valor: o mercado está alinhado com a IA (maior diferença ${sgn(diff * 100, 1)} p.p.). Sem entrada é também uma decisão.`);
+        ? `Melhor leitura de total: ${best.label}. O mercado precifica ${pct(best.pMarket)}, a IA estima ${pct(best.p)} (modelo puro ${pct(best.pModel)}). Odd ${odd(best.odd)} contra justa ${odd(best.fair)}: EV ${sgn(best.ev * 100, 1)}%.`
+        + (best.ev > 0 && (best.odd > 3.2 || best.odd < 1.4) ? ' Essa odd fica fora da faixa aceita para sinal (1,40 a 3,20), então não vira entrada.' : '')
+        : `Total sem valor: o mercado está alinhado com a IA (diferença ${sgn(diff * 100, 1)} p.p.). Sem entrada também é uma decisão.`);
     } else out.push('O provedor ainda não publicou odds para este jogo; a IA mostra apenas as odds justas.');
     if (p.sample < 6) out.push(`Atenção: uma das equipes tem só ${p.sample} jogos na base, então a confiança é menor.`);
     const o = ev.odds;
@@ -247,10 +269,17 @@
         ? `<div class="split"><div style="width:${p.home * 100}%;background:${c1}">${pct(p.home, 0)}</div><div style="width:${p.draw * 100}%;background:${c2}">${pct(p.draw, 0)}</div><div style="width:${p.away * 100}%;background:${c3}">${pct(p.away, 0)}</div></div>`
         : `<div class="split"><div style="width:${p.home * 100}%;background:${c1}">${pct(p.home, 0)}</div><div style="width:${p.away * 100}%;background:${c3}">${pct(p.away, 0)}</div></div>`;
       const minis = ev.sport === 'soccer'
-        ? [['xG casa', p.xgHome.toFixed(2)], ['xG fora', p.xgAway.toFixed(2)], ['Ambos marcam', pct(p.btts, 0)], ['Over 1.5', pct(p.over['1.5'], 0)], ['Over 2.5', pct(p.over['2.5'], 0)], ['Over 3.5', pct(p.over['3.5'], 0)]]
+        ? [['xG casa', p.xgHome.toFixed(2)], ['xG fora', p.xgAway.toFixed(2)], ['Gols proj.', (p.xgHome + p.xgAway).toFixed(2)], ['Ambos marcam', pct(p.btts, 0)], ['Over 2.5', pct(p.over['2.5'], 0)], ['Under 2.5', pct(1 - p.over['2.5'], 0)]]
+        : ev.sport === 'hockey'
+        ? [['xG casa', p.xgHome.toFixed(2)], ['xG fora', p.xgAway.toFixed(2)], ['Gols proj.', p.total.toFixed(2)], ['Prorrogação', pct(p.regDraw, 0)], ['Over 5.5', pct(p.over['5.5'], 0)], ['Over 6.5', pct(p.over['6.5'], 0)]]
         : [['Pontos casa', p.ptsHome.toFixed(1)], ['Pontos fora', p.ptsAway.toFixed(1)], ['Margem', sgn(p.margin, 1)], ['Total', p.total.toFixed(1)], ['σ margem', p.sigM.toFixed(1)], ['σ total', p.sigT.toFixed(1)]];
       body += `<div class="panel section-gap"><div class="panel-h"><h3>Probabilidades da IA</h3><span class="meta">${ev.sport === 'soccer' ? 'Casa · Empate · Fora' : 'Casa · Fora'}</span></div>${split}
         <div class="mini-grid section-gap">${minis.map(([l, v]) => `<div class="mini"><div class="lbl">${l}</div><div class="val">${v}</div></div>`).join('')}</div></div>`;
+      const tl = totalLines(ev), ln = ev.odds?.totalLine;
+      if (tl.length) body += `<div class="panel section-gap"><div class="panel-h"><h3>Linhas de total</h3><span class="meta">modelo puro e odd justa${ln != null ? ` · linha da casa ${ln}` : ''}</span></div><div class="table-wrap"><table>
+        <thead><tr><th>Linha</th><th class="n">Over</th><th class="n">Justa over</th><th class="n">Under</th><th class="n">Justa under</th></tr></thead><tbody>
+        ${tl.map((r) => `<tr${r.line === ln ? ' style="color:var(--accent)"' : ''}><td class="mono">${r.line}</td><td class="n">${pct(r.over)}</td><td class="n">${odd(1 / r.over)}</td><td class="n">${pct(1 - r.over)}</td><td class="n">${odd(1 / (1 - r.over))}</td></tr>`).join('')}
+        </tbody></table></div><p class="note">Compare a odd justa com a da sua casa: só há valor quando a casa paga mais do que a justa.</p></div>`;
       if (p.scores) body += `<div class="panel section-gap"><div class="panel-h"><h3>Placares mais prováveis</h3></div><div class="mini-grid">${p.scores.map((s) => `<div class="mini"><div class="lbl">${s.score}</div><div class="val">${pct(s.p)}</div></div>`).join('')}</div></div>`;
       body += `<div class="panel section-gap"><div class="panel-h"><h3>Mercados: IA × casa</h3><span class="meta">${esc(ev.odds?.provider || 'sem odds publicadas')}</span></div><div class="table-wrap"><table class="mtable">
         <thead><tr><th>Opção</th><th class="n">Modelo</th><th class="n">Mercado</th><th class="n">IA final</th><th class="n">Justa</th><th class="n">Odd</th><th class="n">EV</th></tr></thead><tbody>
@@ -280,12 +309,14 @@
     const open = real.filter((s) => s.status === 'aberto').sort((a, b) => b.ev - a.ev);
     const liveNow = D.feed.map(withLive).filter((e) => e.state === 'in' && sportOk(e.sport));
     const ins = D.learning.insights.slice(-8).reverse();
+    const mem = D.meta?.memory ? Object.values(D.meta.memory) : [];
+    const memPct = mem.length ? mem.reduce((a, c) => a + c.pct, 0) / mem.length : 0;
     return `<div class="kpis">
       <div class="kpi"><div class="lbl">Sinais abertos</div><div class="val">${open.length}</div><div class="hint">${real.filter((s) => s.status === 'travado').length} em andamento</div></div>
       <div class="kpi"><div class="lbl">Taxa de acerto</div><div class="val">${pct(P.hit)}</div><div class="hint">${P.gr} green · ${P.rd} red</div></div>
       <div class="kpi"><div class="lbl">ROI</div><div class="val ${P.roi > 0 ? 'pos' : P.roi < 0 ? 'neg' : ''}">${P.roi == null ? '—' : sgn(P.roi * 100, 1) + '%'}</div><div class="hint">${P.n} sinais liquidados</div></div>
       <div class="kpi"><div class="lbl">Lucro</div><div class="val ${P.profit > 0 ? 'pos' : P.profit < 0 ? 'neg' : ''}">${sgn(P.profit)}u</div><div class="hint">1u = 1% da banca</div></div>
-      <div class="kpi"><div class="lbl">Jogos estudados</div><div class="val">${(D.meta?.gamesLearned ?? 0).toLocaleString('pt-BR')}</div><div class="hint">${D.meta?.teamsKnown ?? 0} equipes com rating</div></div>
+      <div class="kpi"><div class="lbl">Memória histórica</div><div class="val">${(D.meta?.memoryGames ?? 0).toLocaleString('pt-BR')}</div><div class="hint">${D.meta?.fullyTrained ? 'treino completo' : `coletando · ${pct(memPct, 0)}`} · ${D.meta?.teamsKnown ?? 0} equipes</div></div>
       <div class="kpi"><div class="lbl">Lições aprendidas</div><div class="val">${D.learning.insights.length.toLocaleString('pt-BR')}</div><div class="hint">ciclo #${D.meta?.cycle ?? '—'}</div></div>
     </div>
     <div class="cols-2">
@@ -307,8 +338,8 @@
     list = ui.sigStatus === 'ativos' ? list.sort((a, b) => a.date.localeCompare(b.date)) : list.sort((a, b) => b.date.localeCompare(a.date));
     return `<div class="filters">
       <div class="seg" id="sig-status">${Object.keys(groups).map((k) => `<button data-v="${k}" aria-pressed="${ui.sigStatus === k}">${k[0].toUpperCase() + k.slice(1)}</button>`).join('')}</div>
-      <select id="sig-market" aria-label="Mercado"><option value="all">Todos os mercados</option>${Object.entries(MARKETS).map(([k, v]) => `<option value="${k}" ${ui.sigMarket === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
-      <span class="note">Critério atual: EV mínimo ${Object.entries(D.ratings?.learned?.minEV || {}).map(([k, v]) => `${MARKETS[k].split(' ')[0]} ${pct(v, 1)}`).join(' · ')}</span>
+      <select id="sig-market" aria-label="Mercado"><option value="all">Todos os mercados</option>${SIGNAL_MARKETS.map((k) => `<option value="${k}" ${ui.sigMarket === k ? 'selected' : ''}>${mLabel(k)}</option>`).join('')}</select>
+      <span class="note">Sinais só em totais (mais/menos). EV mínimo atual: ${SIGNAL_MARKETS.map((k) => `${SPORTS[k.split(':')[0]]} ${pct(D.ratings?.learned?.minEV?.[k], 1)}`).join(' · ')}</span>
     </div>
     ${list.length ? `<div class="signals">${list.slice(0, 120).map(sigCard).join('')}</div>` : `<div class="empty"><b>Nenhum sinal nesta lista</b>Sinais aparecem quando a probabilidade da IA supera a probabilidade implícita na odd por uma margem segura. A IA verifica de novo em <span class="mono" data-countdown>—</span>.</div>`}`;
   };
@@ -349,11 +380,12 @@
         <div class="kpi"><div class="lbl">Acerto</div><div class="val">${pct(P.hit)}</div><div class="hint">${P.gr} G · ${P.rd} R</div></div>
         <div class="kpi"><div class="lbl">Lucro</div><div class="val ${P.profit >= 0 ? 'pos' : 'neg'}">${sgn(P.profit)}u</div><div class="hint">${P.staked.toFixed(1)}u apostadas</div></div>
         <div class="kpi"><div class="lbl">ROI</div><div class="val ${P.roi >= 0 ? 'pos' : 'neg'}">${P.roi == null ? '—' : sgn(P.roi * 100, 1) + '%'}</div><div class="hint">odd média ${odd(P.avgOdd)}</div></div>
+        <div class="kpi"><div class="lbl">CLV médio</div><div class="val ${P.clv > 0 ? 'pos' : P.clv < 0 ? 'neg' : ''}">${P.clv == null ? '—' : sgn(P.clv * 100, 1) + '%'}</div><div class="hint">odd do sinal × fechamento</div></div>
         <div class="kpi"><div class="lbl">Rebaixamento máx.</div><div class="val neg">${P.dd.toFixed(2)}u</div><div class="hint">pior sequência</div></div>
       </div>
       <div class="panel"><div class="panel-h"><h2>Lucro acumulado (unidades)</h2></div>${P.series.length ? '<div class="chart-box"><canvas id="ch-profit"></canvas></div>' : '<div class="empty"><b>O gráfico aparece com o primeiro sinal liquidado</b>Os sinais abertos são encerrados automaticamente quando o jogo termina.</div>'}</div>
       <div class="cols-2e section-gap">
-        <div class="panel"><div class="panel-h"><h3>Por mercado</h3></div>${table(groupBy(list, (s) => s.marketKey), (k) => MARKETS[k] || k)}</div>
+        <div class="panel"><div class="panel-h"><h3>Por mercado</h3></div>${table(groupBy(list, (s) => s.marketKey), (k) => mLabel(k))}</div>
         <div class="panel"><div class="panel-h"><h3>Por confiança</h3></div>${table(groupBy(list, confB), (k) => k)}</div>
       </div>
       <div class="panel section-gap"><div class="panel-h"><h3>Por liga</h3></div>${table(groupBy(list, (s) => s.leagueName), (k) => k)}</div>
@@ -364,8 +396,8 @@
   };
 
   V.aprendizado = () => {
-    const types = ['all', 'estudo', 'resultado', 'zebra', 'peso', 'limiar', 'mercado', 'sinal', 'cancelado'];
-    const L = { all: 'Tudo', estudo: 'Estudos', resultado: 'Resultados', zebra: 'Zebras', peso: 'Pesos', limiar: 'Critérios', mercado: 'Mercado', sinal: 'Sinais', cancelado: 'Retirados' };
+    const types = ['all', 'conhecimento', 'treino', 'memoria', 'estudo', 'resultado', 'zebra', 'peso', 'limiar', 'mercado', 'sinal'];
+    const L = { all: 'Tudo', conhecimento: 'Conhecimento', treino: 'Treinos', memoria: 'Memória', estudo: 'Estudos', resultado: 'Resultados', zebra: 'Totais fora do esperado', peso: 'Pesos', limiar: 'Critérios', mercado: 'Mercado', sinal: 'Sinais' };
     const q = ui.insQ.toLowerCase();
     const list = D.learning.insights.filter((i) => (ui.insType === 'all' || i.type === ui.insType) && (!q || i.text.toLowerCase().includes(q))).slice().reverse();
     const st = D.ratings?.stats || {};
@@ -381,33 +413,44 @@
           <input type="search" id="ins-q" placeholder="Buscar time, liga, mercado…" value="${esc(ui.insQ)}"></div>
           <div class="timeline">${list.slice(0, 300).map(insightItem).join('') || '<div class="note">Nada encontrado.</div>'}</div></div>
         <div class="grid" style="align-content:start">
+          ${knowledgePanel()}
           <div class="panel"><div class="panel-h"><h3>Peso do modelo próprio</h3><span class="meta">o restante vem do mercado</span></div><div class="chart-box" style="height:220px"><canvas id="ch-blend"></canvas></div></div>
           <div class="panel"><div class="panel-h"><h3>Parâmetros atuais</h3></div><div class="table-wrap"><table><thead><tr><th>Mercado</th><th class="n">Peso IA</th><th class="n">EV mín.</th><th class="n">Jogos</th></tr></thead><tbody>
-            ${Object.keys(MARKETS).map((k) => `<tr><td>${MARKETS[k]}</td><td class="n">${pct(D.ratings?.learned?.blend?.[k])}</td><td class="n">${pct(D.ratings?.learned?.minEV?.[k])}</td><td class="n">${st[k]?.n ?? 0}</td></tr>`).join('')}
+            ${SIGNAL_MARKETS.map((k) => `<tr><td>${mLabel(k)}</td><td class="n">${pct(D.ratings?.learned?.blend?.[k])}</td><td class="n">${pct(D.ratings?.learned?.minEV?.[k])}</td><td class="n">${st[k]?.n ?? 0}</td></tr>`).join('')}
           </tbody></table></div>
           <p class="note">Peso e EV mínimo mudam sozinhos: o peso por gradiente de log-loss a cada resultado, o EV mínimo pelo ROI real das últimas entradas.</p></div>
         </div>
       </div>`;
   };
 
+  function knowledgePanel() {
+    const K = D.ratings?.knowledge?.leagues || {}, M = D.meta?.memory || {};
+    const lgs = (D.meta?.leagues || []).filter((l) => sportOk(l.sport));
+    const cell = (k) => !k ? '—' : k.sport === 'soccer' ? `O2.5 ${pct(k.o25, 0)} · O3.5 ${pct(k.o35, 0)}` : k.sport === 'hockey' ? `O5.5 ${pct(k.o55, 0)} · O6.5 ${pct(k.o65, 0)}` : `±10 de ${k.avg}: ${pct(k.within10, 0)}`;
+    return `<div class="panel"><div class="panel-h"><h3>Base de conhecimento</h3><span class="meta">${D.meta?.fullyTrained ? 'memória completa' : 'memória sendo coletada'}</span></div>
+      <div class="table-wrap"><table><thead><tr><th>Liga</th><th class="n">Jogos</th><th class="n">Média</th><th>Totais</th><th style="min-width:70px">Memória</th></tr></thead><tbody>
+      ${lgs.map((l) => { const k = K[l.slug], m = M[l.slug]; return `<tr><td>${esc(l.name)}</td><td class="n">${m?.games ?? 0}</td><td class="n">${k ? k.avg : '—'}</td><td class="mono" style="font-size:12px">${cell(k)}</td><td><div class="meter" title="${pct(m?.pct ?? 0, 0)}"><i style="width:${((m?.pct ?? 0) * 100).toFixed(0)}%"></i></div></td></tr>`; }).join('')}
+      </tbody></table></div><p class="note">Estatísticas medidas em todos os jogos guardados de cada liga. A memória é baixada aos poucos da ESPN e, quando completa, a IA se retreina inteira em ordem cronológica.</p></div>`;
+  }
+
   V.ratings = () => {
     const R = D.ratings; if (!R) return '<div class="empty"><b>Ratings indisponíveis</b></div>';
     const sp = ui.sport === 'all' ? ui.ratSport : ui.sport;
     const lgs = (D.meta?.leagues || []).filter((l) => l.sport === sp && !/uefa|conmebol/.test(l.slug));
     const form = (f) => (f?.length ? `<span class="form">${f.map((x) => `<i class="${x}">${x === 'W' ? 'V' : x === 'L' ? 'D' : 'E'}</i>`).join('')}</span>` : '');
-    const seg = ui.sport === 'all' ? `<div class="seg" id="rat-sport"><button data-v="soccer" aria-pressed="${sp === 'soccer'}">Futebol</button><button data-v="basketball" aria-pressed="${sp === 'basketball'}">Basquete</button></div>` : '';
+    const seg = ui.sport === 'all' ? `<div class="seg" id="rat-sport">${Object.entries(SPORTS).map(([k, v]) => `<button data-v="${k}" aria-pressed="${sp === k}">${v}</button>`).join('')}</div>` : '';
     const sel = `<select id="rat-lg" aria-label="Liga"><option value="all">Todas as ligas</option>${lgs.map((l) => `<option value="${l.slug}" ${ui.ratLg === l.slug ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select>`;
-    if (sp === 'soccer') {
-      const rows = R.soccer.filter((t) => ui.ratLg === 'all' || t.lg === ui.ratLg);
+    if (sp === 'soccer' || sp === 'hockey') {
+      const rows = (R[sp] || []).filter((t) => ui.ratLg === 'all' || t.lg === ui.ratLg);
       return `<div class="filters">${seg}${sel}<span class="note">Ataque e defesa em % relativo à média da liga · Poder = ataque − defesa</span></div>
-        <div class="panel"><div class="table-wrap"><table><thead><tr><th>#</th><th>Equipe</th><th class="n">Poder</th><th class="n">Ataque</th><th class="n">Defesa (gols sofridos)</th><th class="n">Jogos</th><th>Forma</th></tr></thead><tbody>
-        ${rows.map((t, i) => `<tr><td class="mono">${i + 1}</td><td><b>${esc(t.name)}</b></td><td class="n">${sgn(t.power, 3)}</td><td class="n ${t.att >= 0 ? 'pos' : 'neg'}">${sgn((Math.exp(t.att) - 1) * 100, 0)}%</td><td class="n ${t.def <= 0 ? 'pos' : 'neg'}">${sgn((Math.exp(t.def) - 1) * 100, 0)}%</td><td class="n">${t.n}</td><td>${form(t.form)}</td></tr>`).join('') || '<tr><td colspan="7" class="note">Sem equipes com jogos suficientes nesta liga.</td></tr>'}
+        <div class="panel"><div class="table-wrap"><table><thead><tr><th>#</th><th>Equipe</th><th class="n">Poder</th><th class="n">Ataque</th><th class="n">Defesa (gols sofridos)</th><th class="n">Total médio</th><th class="n">Jogos</th><th>Forma</th></tr></thead><tbody>
+        ${rows.map((t, i) => `<tr><td class="mono">${i + 1}</td><td><b>${esc(t.name)}</b></td><td class="n">${sgn(t.power, 3)}</td><td class="n ${t.att >= 0 ? 'pos' : 'neg'}">${sgn((Math.exp(t.att) - 1) * 100, 0)}%</td><td class="n ${t.def <= 0 ? 'pos' : 'neg'}">${sgn((Math.exp(t.def) - 1) * 100, 0)}%</td><td class="n">${t.tot ?? '—'}</td><td class="n">${t.n}</td><td>${form(t.form)}</td></tr>`).join('') || '<tr><td colspan="8" class="note">Sem equipes com jogos suficientes nesta liga.</td></tr>'}
         </tbody></table></div></div>`;
     }
     const rows = R.basketball.filter((t) => ui.ratLg === 'all' || t.lg === ui.ratLg);
     return `<div class="filters">${seg}${sel}<span class="note">Rating líquido em pontos contra um time médio em quadra neutra · Ritmo = efeito no total de pontos</span></div>
-      <div class="panel"><div class="table-wrap"><table><thead><tr><th>#</th><th>Equipe</th><th>Liga</th><th class="n">Rating</th><th class="n">Ritmo</th><th class="n">Jogos</th><th>Forma</th></tr></thead><tbody>
-      ${rows.map((t, i) => `<tr><td class="mono">${i + 1}</td><td><b>${esc(t.name)}</b></td><td>${esc((t.lg || '').toUpperCase())}</td><td class="n ${t.r >= 0 ? 'pos' : 'neg'}">${sgn(t.r, 1)}</td><td class="n">${sgn(t.t, 1)}</td><td class="n">${t.n}</td><td>${form(t.form)}</td></tr>`).join('')}
+      <div class="panel"><div class="table-wrap"><table><thead><tr><th>#</th><th>Equipe</th><th>Liga</th><th class="n">Rating</th><th class="n">Ritmo</th><th class="n">Total médio</th><th class="n">Jogos</th><th>Forma</th></tr></thead><tbody>
+      ${rows.map((t, i) => `<tr><td class="mono">${i + 1}</td><td><b>${esc(t.name)}</b></td><td>${esc((t.lg || '').toUpperCase())}</td><td class="n ${t.r >= 0 ? 'pos' : 'neg'}">${sgn(t.r, 1)}</td><td class="n">${sgn(t.t, 1)}</td><td class="n">${t.tot ?? '—'}</td><td class="n">${t.n}</td><td>${form(t.form)}</td></tr>`).join('')}
       </tbody></table></div></div>`;
   };
 
@@ -435,11 +478,14 @@
       <h3 style="margin-top:0">De onde vêm os dados</h3>
       <p>Jogos, placares, forma e odds de referência vêm da API pública da ESPN (<code>site.api.espn.com</code>), a mesma usada pelo site da ESPN. As odds exibidas são do provedor que a ESPN mostra em cada jogo (normalmente DraftKings). O placar ao vivo é lido direto da ESPN pelo seu navegador a cada 30 segundos.</p>
       <h3>Como a IA calcula</h3>
+      <p><b>Foco em totais:</b> os sinais saem só em mais/menos (over/under) do total da partida, nos três esportes. Vencedor e handicap continuam calculados na análise de cada jogo, mas não geram sinal.</p>
       <p><b>Futebol:</b> modelo de Poisson bivariado com correção Dixon-Coles. Cada time tem força de ataque e de defesa; cada liga tem média de gols de mandante e visitante. Daí saem gols esperados, matriz de placares, 1X2, over/under e ambos marcam.</p>
       <p><b>Basquete:</b> rating de margem e de ritmo por time, vantagem de mando por liga e desvio-padrão aprendido. Margem e total projetados viram probabilidades pela distribuição normal, para vencedor, spread e total.</p>
+      <p><b>Hóquei (NHL):</b> Poisson para os gols do tempo normal de cada time. Empate no tempo normal leva a prorrogação/shootout e soma exatamente 1 gol ao total, como as casas contam. A IA também mede quanto um back-to-back muda os gols sofridos.</p>
+      <p><b>Memória e conhecimento:</b> todos os jogos encerrados desde a temporada passada ficam guardados em <code>docs/data/history/</code>. A IA começa com princípios de mercado e médias conhecidas de cada liga, substitui tudo pelo que mede nos dados e se retreina do zero quando a memória completa.</p>
       <p><b>Mercado:</b> a probabilidade justa da casa é obtida removendo a margem. A probabilidade final mistura modelo e mercado com um peso que a própria IA ajusta.</p>
       <h3>Quando sai um sinal</h3>
-      <p>Valor esperado = probabilidade × odd − 1. O sinal sai quando o EV passa do mínimo do mercado, a probabilidade é ≥ 18% e a odd está entre 1,35 e 6,50. A stake é ¼ de Kelly, com teto de 3%. Se a odd piorar antes do jogo e o valor sumir, o sinal é retirado e não conta no desempenho. No início da partida ele trava e é liquidado automaticamente pelo placar final.</p>
+      <p>Valor esperado = probabilidade × odd − 1. O sinal sai em linhas .5 quando o EV passa do mínimo do mercado e a odd está entre 1,40 e 3,20. A stake é ¼ de Kelly, com teto de 3%. A odd do sinal fica registrada no momento da emissão e todo sinal emitido conta no desempenho. A IA acompanha a odd até o início do jogo para medir o CLV (se você pegou preço melhor que o de fechamento). O sinal é liquidado automaticamente pelo placar final.</p>
       <h3>Aprendizado a cada 10 minutos</h3>
       <p>Em cada ciclo a IA: coleta a janela de jogos; incorpora resultados novos aos ratings; compara a precisão do modelo com a do mercado (log-loss) e ajusta o peso de cada um; revisa o EV mínimo de cada mercado pelo ROI real; mede a calibração; e registra as lições na linha do tempo. O histórico de lições não tem limite: quando cresce, é arquivado por mês.</p>
       <h3>Onde fica salvo</h3>
@@ -467,7 +513,7 @@
     const cc = $('#ch-calib');
     if (cc && D.ratings?.calib) {
       const sets = Object.entries(D.ratings.calib).filter(([sp]) => sportOk(sp)).map(([sp, b]) => ({
-        label: sp === 'soccer' ? 'Futebol' : 'Basquete', borderColor: cssVar(sp === 'soccer' ? '--soccer' : '--bball'), backgroundColor: cssVar(sp === 'soccer' ? '--soccer' : '--bball'),
+        label: SPORTS[sp], borderColor: cssVar({ soccer: '--soccer', basketball: '--bball', hockey: '--hockey' }[sp]), backgroundColor: cssVar({ soccer: '--soccer', basketball: '--bball', hockey: '--hockey' }[sp]),
         data: b.filter((x) => x.n >= 15).map((x) => ({ x: +(x.sumP / x.n * 100).toFixed(1), y: +(x.hits / x.n * 100).toFixed(1) })), showLine: true, tension: .2, pointRadius: 3,
       }));
       sets.push({ label: 'Perfeito', data: [{ x: 0, y: 0 }, { x: 100, y: 100 }], borderColor: grid, borderDash: [4, 4], pointRadius: 0, showLine: true });
@@ -477,7 +523,7 @@
     if (cb) {
       const ps = (D.learning.params || []).slice(-300);
       const cols = [cssVar('--soccer'), cssVar('--good'), cssVar('--bball'), acc, cssVar('--bad')];
-      charts.b = new Chart(cb, { type: 'line', data: { labels: ps.map((p) => '#' + p.cycle), datasets: Object.keys(MARKETS).map((k, i) => ({ label: MARKETS[k], data: ps.map((p) => +(p.blend[k] * 100).toFixed(2)), borderColor: cols[i], pointRadius: 0, borderWidth: 2, tension: .2 })) },
+      charts.b = new Chart(cb, { type: 'line', data: { labels: ps.map((p) => '#' + p.cycle), datasets: SIGNAL_MARKETS.map((k, i) => ({ label: mLabel(k), data: ps.map((p) => (p.blend[k] == null ? null : +(p.blend[k] * 100).toFixed(2))), borderColor: cols[i], pointRadius: 0, borderWidth: 2, tension: .2 })) },
         options: { ...base, plugins: { legend: { display: true, labels: { boxWidth: 10, font: { size: 10 } } } }, scales: { x: { display: false }, y: { grid: { color: grid }, ticks: { callback: (v) => v + '%' } } } } });
     }
   }

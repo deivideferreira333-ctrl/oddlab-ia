@@ -1,8 +1,8 @@
 // Cérebro da IA: análise de mercados, emissão de sinais, liquidação e aprendizado contínuo
 import fs from 'node:fs';
 import path from 'node:path';
-import { DEFAULTS, MARKET_LABEL } from './config.mjs';
-import { clamp, devig, soccerPredict, soccerUpdate, bbPredict, bbUpdate } from './model.mjs';
+import { DEFAULTS, MARKET_LABEL, SIGNAL_MARKETS } from './config.mjs';
+import { clamp, devig, soccerPredict, soccerUpdate, bbPredict, bbUpdate, hockeyPredict, hockeyUpdate } from './model.mjs';
 
 import { fileURLToPath } from 'node:url';
 
@@ -19,13 +19,14 @@ const writeJSON = (f, v, pretty = false) => {
 export function loadAll() {
   const state = readJSON('brain.json', null) || {
     version: 1, bootstrapped: false, cycles: 0, created: new Date().toISOString(),
-    soccerLeagues: {}, soccerTeams: {}, bbLeagues: {}, bbTeams: {},
+    soccerLeagues: {}, soccerTeams: {}, bbLeagues: {}, bbTeams: {}, hkLeagues: {}, hkTeams: {},
     learned: structuredClone(DEFAULTS.learned),
     stats: {}, calib: {}, processed: {}, snapshots: {}, lastLogged: {},
   };
   state.learned = { ...structuredClone(DEFAULTS.learned), ...state.learned,
     blend: { ...DEFAULTS.learned.blend, ...state.learned?.blend },
     minEV: { ...DEFAULTS.learned.minEV, ...state.learned?.minEV } };
+  state.hkLeagues ??= {}; state.hkTeams ??= {};
   const signals = readJSON('signals.json', []);
   const backtest = readJSON('backtest.json', []);
   const learning = readJSON('learning.json', { insights: [], params: [], archived: [] });
@@ -78,13 +79,28 @@ export function analyze(state, ev) {
       opt('soccer:1x2', 'draw', 'Empate', null, pred.draw, mk?.probs[1], o.draw, w),
       opt('soccer:1x2', 'away', ev.away.short || ev.away.name, null, pred.away, mk?.probs[2], o.away, w),
     );
-    const line = o.totalLine != null && Math.abs((o.totalLine * 2) % 2) === 1 ? o.totalLine : 2.5;
-    const pOver = pred.over[line] ?? pred.over[2.5];
+    const line = o.totalLine != null && Math.abs((o.totalLine * 2) % 2) === 1 && pred.over[o.totalLine] != null ? o.totalLine : 2.5;
+    const pOver = pred.over[line];
     const mt = o.totalLine === line && o.over && o.under ? devig([o.over, o.under]) : null;
     const wt = B['soccer:ou'];
     markets.push(
       opt('soccer:ou', 'over', `Over ${line}`, line, pOver, mt?.probs[0], mt ? o.over : null, wt),
       opt('soccer:ou', 'under', `Under ${line}`, line, 1 - pOver, mt?.probs[1], mt ? o.under : null, wt),
+    );
+  } else if (ev.sport === 'hockey') {
+    pred = hockeyPredict(state, ev);
+    const mk = o.home && o.away ? devig([o.home, o.away]) : null;
+    markets.push(
+      opt('hockey:ml', 'home', ev.home.short || ev.home.name, null, pred.home, mk?.probs[0], o.home, B['hockey:ml']),
+      opt('hockey:ml', 'away', ev.away.short || ev.away.name, null, pred.away, mk?.probs[1], o.away, B['hockey:ml']),
+    );
+    const half = o.totalLine != null && Math.abs((o.totalLine * 2) % 2) === 1;
+    const line = half ? o.totalLine : 5.5;
+    const pOver = half ? pred.overLine : pred.over[5.5];
+    const mt = half && o.over && o.under ? devig([o.over, o.under]) : null;
+    markets.push(
+      opt('hockey:total', 'over', `Over ${line}`, line, pOver, mt?.probs[0], mt ? o.over : null, B['hockey:total']),
+      opt('hockey:total', 'under', `Under ${line}`, line, 1 - pOver, mt?.probs[1], mt ? o.under : null, B['hockey:total']),
     );
   } else {
     pred = bbPredict(state, ev);
@@ -114,7 +130,7 @@ export function analyze(state, ev) {
 
 export function qualifies(state, m) {
   const S = DEFAULTS.signal;
-  return m.odd && m.pMarket != null && m.ev >= state.learned.minEV[m.marketKey] && m.p >= S.minProb && m.odd >= S.minOdd && m.odd <= S.maxOdd;
+  return SIGNAL_MARKETS.includes(m.marketKey) && m.odd && m.pMarket != null && m.ev >= state.learned.minEV[m.marketKey] && m.p >= S.minProb && m.odd >= S.minOdd && m.odd <= S.maxOdd;
 }
 
 function stakeFor(m) {
@@ -147,7 +163,7 @@ export function outcome(ev, m) {
     const r = gh > ga ? 'home' : gh < ga ? 'away' : 'draw';
     return r === m.side ? 1 : 0;
   }
-  if (m.marketKey.endsWith(':ou') || m.marketKey === 'basketball:total') {
+  if (m.marketKey.endsWith(':ou') || m.marketKey.endsWith(':total')) {
     const t = gh + ga;
     if (t === m.line) return 0.5;
     return (t > m.line) === (m.side === 'over') ? 1 : 0;
@@ -206,6 +222,7 @@ export function settleSignal(sig, ev) {
   if (r === 0.5) { sig.status = 'void'; sig.profit = 0; }
   else if (r === 1) { sig.status = 'green'; sig.profit = +(sig.stake * (sig.odd - 1)).toFixed(3); }
   else { sig.status = 'red'; sig.profit = -sig.stake; }
+  if (sig.closeOdd) sig.clv = +(sig.odd / sig.closeOdd - 1).toFixed(4);
 }
 
 // processa um jogo encerrado: avalia, aprende e atualiza ratings
@@ -231,13 +248,10 @@ export function learnFromResult(ctx, ev, { backtest = false } = {}) {
   // surpresa = probabilidade do modelo para o que aconteceu
   const res = ev.home.score > ev.away.score ? 'home' : ev.home.score < ev.away.score ? 'away' : 'draw';
   const pRes = res === 'home' ? an.pred.home : res === 'away' ? an.pred.away : an.pred.draw;
-  const before = ev.sport === 'soccer'
-    ? { h: { ...state.soccerTeams[ev.home.id] }, a: { ...state.soccerTeams[ev.away.id] } }
-    : { h: { ...state.bbTeams[ev.home.id] }, a: { ...state.bbTeams[ev.away.id] } };
-  const err = ev.sport === 'soccer' ? soccerUpdate(state, ev) : bbUpdate(state, ev);
+  const err = ev.sport === 'soccer' ? soccerUpdate(state, ev) : ev.sport === 'hockey' ? hockeyUpdate(state, ev) : bbUpdate(state, ev);
   state.processed[ev.id] = ev.date;
   state.totalLearned = (state.totalLearned || 0) + 1;
-  return { ev, an, pRes, res, err, blendChanges, before };
+  return { ev, an, pRes, res, err, blendChanges };
 }
 
 export function baseSignal(ev, s, backtest = false) {
@@ -247,7 +261,7 @@ export function baseSignal(ev, s, backtest = false) {
     eventId: ev.id, sport: ev.sport, league: ev.league, leagueName: ev.leagueName, date: ev.date,
     home: ev.home.name, away: ev.away.name, homeLogo: ev.home.logo, awayLogo: ev.away.logo,
     marketKey: s.marketKey, market: s.market, side: s.side, label: s.label, line: s.line,
-    odd: s.odd, p: +s.p.toFixed(4), pModel: +s.pModel.toFixed(4), pMarket: +s.pMarket.toFixed(4),
+    odd: s.odd, closeOdd: s.odd, p: +s.p.toFixed(4), pModel: +s.pModel.toFixed(4), pMarket: +s.pMarket.toFixed(4),
     ev: +s.ev.toFixed(4), stake: s.stake, confidence: s.confidence,
     provider: ev.odds?.provider || null,
     status: backtest ? 'travado' : 'aberto', backtest,

@@ -107,11 +107,20 @@ async function getJSON(url, tries = 2) {
   return null;
 }
 
-export async function fetchDay(league, dateStr) {
+export async function fetchDay(league, dateStr, strict = false) {
   const url = `${BASE}/${league.sport}/${league.slug}/scoreboard?dates=${dateStr}`;
   const j = await getJSON(url);
-  if (!j?.events) return [];
+  if (!j) return strict ? null : [];
+  if (!j.events) return [];
   return j.events.map((e) => normalizeEvent(e, league)).filter(Boolean);
+}
+
+// calendário da temporada que contém a data: lista de dias (YYYYMMDD) com jogos
+export async function fetchCalendar(league, dateStr) {
+  const j = await getJSON(`${BASE}/${league.sport}/${league.slug}/scoreboard?dates=${dateStr}`);
+  const cal = j?.leagues?.[0]?.calendar;
+  if (!Array.isArray(cal) || !cal.length || typeof cal[0] !== 'string') return null;
+  return cal.map((c) => c.slice(0, 10).replace(/-/g, ''));
 }
 
 // executa tarefas com concorrência limitada
@@ -131,7 +140,7 @@ export async function pool(tasks, n = 10) {
 export async function fetchWindow(leagues, days) {
   const tasks = [];
   for (const lg of leagues) for (const d of days) tasks.push(() => fetchDay(lg, d));
-  const res = await pool(tasks, 2);
+  const res = await pool(tasks, 3);
   const map = new Map();
   for (const list of res) for (const e of list || []) map.set(e.id, e);
   return [...map.values()].sort((a, b) => a.date.localeCompare(b.date));

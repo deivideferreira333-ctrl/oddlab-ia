@@ -1,13 +1,13 @@
 # OddLab IA
 
-IA de análise e sinais para **futebol e basquete**. Coleta jogos, placares e odds de referência da API pública da ESPN, calcula probabilidades com modelos estatísticos, emite sinais de valor esperado positivo, liquida cada sinal pelo placar oficial e aprende com os resultados a cada 10 minutos.
+IA de análise e sinais de **totais (mais/menos)** para **futebol, basquete (NBA/WNBA) e hóquei (NHL)**. Coleta jogos, placares e odds de referência da API pública da ESPN, calcula probabilidades com modelos estatísticos, emite sinais de valor esperado positivo, liquida cada sinal pelo placar oficial e aprende com os resultados a cada 10 minutos.
 
 ## Abas do site
 
 | Aba | O que mostra |
 |---|---|
 | Painel | KPIs, melhores sinais, jogos ao vivo e as lições mais recentes |
-| Sinais | Sinais abertos, em jogo, encerrados e retirados, com odd, probabilidade IA × mercado, EV, stake e confiança |
+| Sinais | Sinais de over/under abertos, em jogo e encerrados, com odd, probabilidade IA × mercado, EV, stake e confiança |
 | Ao vivo | Placar em tempo real (ESPN, a cada 30 s) cruzado com as projeções |
 | Jogos e análise | Estudo completo de cada jogo: xG, matriz de placares, odds justas, mercados IA × casa e leitura em texto |
 | Desempenho | Acerto, ROI, lucro em unidades, rebaixamento, gráfico acumulado, cortes por mercado, liga e confiança, calibração |
@@ -46,6 +46,7 @@ O GitHub pode atrasar execuções agendadas em alguns minutos nos horários de p
 | `docs/data/brain.json` | Ratings de todos os times, parâmetros por liga, pesos aprendidos, calibração |
 | `docs/data/signals.json` | Todo sinal emitido, com odd, stake, status e resultado |
 | `docs/data/learning.json` | Lições de cada ciclo e histórico de parâmetros (arquivado por mês em `archive/` quando cresce) |
+| `docs/data/history/*.json` | Memória permanente: todos os jogos encerrados de cada liga desde a temporada passada |
 | `docs/data/feed.json` | Jogos da janela atual com a análise completa |
 | `docs/data/ratings.json`, `meta.json` | Tabelas para o site e status do ciclo |
 
@@ -56,7 +57,9 @@ Cada ciclo vira um commit, então todo o histórico fica auditável.
 ```
 engine/config.mjs   ligas monitoradas e parâmetros iniciais
 engine/espn.mjs     coleta e normalização da ESPN (requisições espaçadas, para em caso de limite)
-engine/model.mjs    Poisson + Dixon-Coles (futebol) e rating de margem/total (basquete)
+engine/model.mjs    Poisson + Dixon-Coles (futebol), rating de margem/total (basquete), Poisson + prorrogação (hóquei)
+engine/history.mjs  memória histórica, baixada aos poucos pelo calendário oficial de cada liga
+engine/knowledge.mjs princípios de mercado e estatísticas de totais por liga
 engine/brain.mjs    mercados, sinais, liquidação e aprendizado
 engine/cycle.mjs    o ciclo de 10 minutos
 server.mjs          servidor local
