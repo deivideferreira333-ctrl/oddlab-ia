@@ -275,7 +275,7 @@
         ? [['xG casa', p.xgHome.toFixed(2)], ['xG fora', p.xgAway.toFixed(2)], ['Gols proj.', (p.xgHome + p.xgAway).toFixed(2)], ['Ambos marcam', pct(p.btts, 0)], ['Over 2.5', pct(p.over['2.5'], 0)], ['Under 2.5', pct(1 - p.over['2.5'], 0)]]
         : ev.sport === 'hockey'
         ? [['xG casa', p.xgHome.toFixed(2)], ['xG fora', p.xgAway.toFixed(2)], ['Gols proj.', p.total.toFixed(2)], ['Prorrogação', pct(p.regDraw, 0)], ['Over 5.5', pct(p.over['5.5'], 0)], ['Over 6.5', pct(p.over['6.5'], 0)]]
-        : [['Pontos casa', p.ptsHome.toFixed(1)], ['Pontos fora', p.ptsAway.toFixed(1)], ['Margem', sgn(p.margin, 1)], ['Total', p.total.toFixed(1)], ['σ margem', p.sigM.toFixed(1)], ['σ total', p.sigT.toFixed(1)]];
+        : [['Pontos casa', p.ptsHome.toFixed(1)], ['Pontos fora', p.ptsAway.toFixed(1)], ['Margem', sgn(p.margin, 1)], ['Total', p.total.toFixed(1)], ['Desvio margem', p.sigM.toFixed(1)], ['Desvio total', p.sigT.toFixed(1)]];
       body += `<div class="panel section-gap"><div class="panel-h"><h3>Probabilidades da IA</h3><span class="meta">${ev.sport === 'soccer' ? 'Casa · Empate · Fora' : 'Casa · Fora'}</span></div>${split}
         <div class="mini-grid section-gap">${minis.map(([l, v]) => `<div class="mini"><div class="lbl">${l}</div><div class="val">${v}</div></div>`).join('')}</div></div>`;
       const tl = totalLines(ev), ln = ev.odds?.totalLine;

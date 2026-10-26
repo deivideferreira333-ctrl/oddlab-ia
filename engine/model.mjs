@@ -190,7 +190,8 @@ function leagueH(state, lg) {
     state.hkLeagues[lg] = { lgH: Math.log(reg * p.home), lgA: Math.log(reg * (1 - p.home)), b2b: 0, otHome: 0.52, n: 0, goals: 0, ot: 0, over55: 0, over65: 0 };
   }
   const L = state.hkLeagues[lg];
-  L.gk ??= 0.08; L.svAvg ??= 0.9; // prior: cada 1 p.p. de SV% do goleiro muda ~8% os gols sofridos
+  L.gk ??= 0.08; L.svAvg ??= 0.9;
+  L.tieK ??= 1.3; // Poisson independente subestima empates no tempo normal; fator aprendido pela taxa real de prorrogação // prior: cada 1 p.p. de SV% do goleiro muda ~8% os gols sofridos
   return L;
 }
 function teamH(state, id, name) {
@@ -221,7 +222,7 @@ export function hockeyPredict(state, ev) {
   let pH = 0, pT = 0, pA = 0;
   const dist = new Array(2 * N + 2).fill(0); // distribuição do total final
   for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
-    const p = poisson(i, lh) * poisson(j, la);
+    const p = poisson(i, lh) * poisson(j, la) * (i === j ? L.tieK : 1);
     if (i > j) pH += p; else if (i < j) pA += p; else pT += p;
     dist[i === j ? 2 * i + 1 : i + j] += p;
   }
@@ -243,6 +244,8 @@ export function hockeyUpdate(state, ev) {
   for (const t of [h, a]) if (t.last && (Date.parse(ev.date) - Date.parse(t.last)) / 864e5 > 75) { t.att *= 0.7; t.def *= 0.7; }
   let gh = ev.home.score, ga = ev.away.score;
   const ot = /OT|SO/i.test(ev.detail || '') || (ev.period || 0) > 3;
+  const pTie = hockeyPredict(state, ev).regDraw;
+  L.tieK = clamp(L.tieK + 0.03 * ((ot ? 1 : 0) - pTie), 1, 2);
   if (ot) { if (gh > ga) gh--; else ga--; L.otHome += 0.01 * ((ev.home.score > ev.away.score ? 1 : 0) - L.otHome); }
   const eh = gh - lh, ea = ga - la;
   const lrT = (n) => Math.max(0.03, 0.2 / Math.sqrt(n + 1));
