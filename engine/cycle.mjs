@@ -7,7 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { LEAGUES, WINDOW_BACK, WINDOW_AHEAD, MARKET_LABEL, DEFAULTS, SIGNAL_MARKETS, MODEL_VERSION, HISTORY_BUDGET } from './config.mjs';
 import { fetchWindow, ymd, source } from './espn.mjs';
 import { loadAll, saveAll, analyze, bestSignals, baseSignal, learnFromResult, snapshot, DATA_DIR } from './brain.mjs';
-import { addGame, collectHistory, saveHistories, coverage, isComplete, loadHistory, toEvent } from './history.mjs';
+import { addGame, collectHistory, saveHistories, coverage, isComplete, loadHistory, toEvent, backfillStats, statsPending } from './history.mjs';
+import { tuneSport } from './tune.mjs';
 import { PRINCIPLES, buildKnowledge, knowledgeInsights } from './knowledge.mjs';
 import { gatherContext } from './context.mjs';
 
@@ -159,7 +160,14 @@ export async function runCycle({ log = console.log, budget = HISTORY_BUDGET } = 
   const cov0 = coverage(LEAGUES);
   if (Object.values(cov0).some((c) => c.pending) || LEAGUES.some((l) => !loadHistory(l.slug).cal)) {
     const r = await collectHistory(LEAGUES, budget, log, untrained);
+    budget -= r.requested;
     if (r.added) fresh.push(['memoria', `Memória histórica ampliada: ${r.added} jogos antigos guardados neste ciclo (${r.requested} dias de jogo consultados na ESPN).`]);
+  }
+  // estatísticas (finalizações, arremessos, defesas) dos jogos antigos: completadas com o orçamento que sobrou
+  const statsLeft0 = statsPending(LEAGUES);
+  if (budget > 20 && statsLeft0 && !source.blocked) {
+    const r = await backfillStats(LEAGUES, budget, log);
+    if (r.filled) fresh.push(['memoria', `Estatísticas de ${r.filled} jogos antigos completadas (finalizações, arremessos e defesas). Faltam ${statsPending(LEAGUES)} dias.`]);
   }
 
   // 4) liga nova: treina do zero assim que a memória dela fica completa
@@ -172,12 +180,48 @@ export async function runCycle({ log = console.log, budget = HISTORY_BUDGET } = 
   }
 
   // 5) retreino completo quando toda a memória está baixada (ou o modelo mudou de versão)
+  const sportsOf = [...new Set(LEAGUES.map((l) => l.sport))];
+  const SPORT_NAME = { soccer: 'Futebol', basketball: 'Basquete', hockey: 'Hóquei' };
+  const HP_NAME = { lrMul: 'velocidade de aprendizado', wGoal: 'peso do gol real (resto: finalizações)', kMul: 'velocidade de aprendizado', wLuck: 'sorte no arremesso mantida' };
+  // ajuste automático: testa combinações de parâmetros na memória e aplica a melhor (retorna os esportes que mudaram)
+  const autoTune = (sports) => {
+    const changed = [];
+    state.tuning ??= {};
+    state.learned.hyper ??= {};
+    for (const sp of sports) {
+      if (!LEAGUES.filter((l) => l.sport === sp).every(isComplete)) continue;
+      const cur = state.learned.hyper[sp];
+      const r = tuneSport(sp, cur);
+      if (!r) continue;
+      const gain = (r.current.ll - r.best.ll) / r.current.ll;
+      state.tuning[sp] = { at: new Date().toISOString(), games: r.games, withStats: r.withStats, evaluated: r.evaluated, best: r.best, current: r.current, base: r.base, top: r.results };
+      const desc = Object.entries(r.best.hp).map(([k, v]) => `${HP_NAME[k]} ${v}`).join(', ');
+      if (gain > 0.0005 && JSON.stringify(r.best.hp) !== JSON.stringify(cur)) {
+        state.learned.hyper[sp] = r.best.hp;
+        changed.push(sp);
+        fresh.push(['ajuste', `Ajuste automático (${SPORT_NAME[sp]}): testadas ${r.tried} combinações em ${r.games} jogos da memória (${r.withStats} com estatísticas). A melhor reduziu o erro do total em ${(gain * 100).toFixed(2)}% nos ${r.evaluated} jogos de validação (erro médio ${r.best.mae.toFixed(2)}). Novos parâmetros: ${desc}.`]);
+      } else {
+        fresh.push(['ajuste', JSON.stringify(r.best.hp) === JSON.stringify(r.current.hp)
+          ? `Ajuste automático (${SPORT_NAME[sp]}): os parâmetros atuais continuam os melhores entre ${r.tried} combinações testadas em ${r.games} jogos (erro médio do total ${r.current.mae.toFixed(2)}).`
+          : `Ajuste automático (${SPORT_NAME[sp]}): ${r.tried} combinações testadas em ${r.games} jogos. A melhor (${desc}) reduziria o erro só ${(gain * 100).toFixed(2)}%, abaixo do mínimo de 0,05% para trocar; parâmetros mantidos.`]);
+      }
+    }
+    state.lastTune = cycle;
+    return changed;
+  };
   if (LEAGUES.every(isComplete) && state.trainedVersion !== MODEL_VERSION) {
+    autoTune(sportsOf);
     const n = retrain(ctx, LEAGUES);
     state.trainedVersion = MODEL_VERSION;
     state.trainedLeagues = LEAGUES.map((l) => l.slug);
     fresh.push(['treino', `Retreino completo: ${n} jogos de ${LEAGUES.length} ligas reaprendidos em ordem cronológica. A IA agora usa toda a memória histórica.`]);
     for (const t of knowledgeInsights(buildKnowledge(LEAGUES))) fresh.push(['conhecimento', t]);
+  } else if (cycle - (state.lastTune || 0) >= 144 || (statsLeft0 && !statsPending(LEAGUES))) {
+    // 1x por dia (144 ciclos) e logo após completar as estatísticas antigas
+    for (const sp of autoTune(sportsOf)) {
+      const n = retrain(ctx, LEAGUES.filter((l) => l.sport === sp));
+      fresh.push(['treino', `${SPORT_NAME[sp]} retreinado com os novos parâmetros: ${n} jogos reaprendidos.`]);
+    }
   }
 
   // 6) lições dos resultados (foco em totais)
@@ -299,6 +343,7 @@ export async function runCycle({ log = console.log, budget = HISTORY_BUDGET } = 
     gamesLearned: state.totalLearned || Object.keys(state.processed).length,
     memoryGames: Object.values(cov).reduce((a, c) => a + c.games, 0),
     memoryWithOdds: Object.values(cov).reduce((a, c) => a + (c.withOdds || 0), 0),
+    statsPendingDays: statsPending(LEAGUES), tuning: state.tuning || {}, hyper: state.learned.hyper || {},
     memory: cov, trainedLeagues: state.trainedLeagues, fullyTrained: state.trainedVersion === MODEL_VERSION,
     leagues: LEAGUES, created: state.created,
   };

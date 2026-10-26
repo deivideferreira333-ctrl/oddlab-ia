@@ -27,6 +27,14 @@ function poisson(k, l) {
   return p;
 }
 
+// hiperparâmetros por esporte: ajustados automaticamente pela memória (engine/tune.mjs)
+export const HYPER_DEFAULTS = {
+  soccer: { lrMul: 1, wGoal: 0.6 },      // wGoal: peso do gol real vs. gols esperados pelas finalizações
+  hockey: { lrMul: 1, wGoal: 0.6 },      // idem, com chutes a gol
+  basketball: { kMul: 1, wLuck: 0.5 },   // wLuck: quanto da sorte no arremesso (3 pts e lance livre) é mantida
+};
+export const hyper = (state, sport) => ({ ...HYPER_DEFAULTS[sport], ...(state.learned?.hyper?.[sport] || {}) });
+
 // horas desde o último jogo do time (back-to-back < 36 h)
 const restHours = (t, date) => (t?.last ? (Date.parse(date) - Date.parse(t.last)) / 36e5 : 999);
 const isB2B = (t, date) => { const h = restHours(t, date); return h > 0 && h < 36 ? 1 : 0; };
@@ -37,7 +45,9 @@ function leagueS(state, lg) {
     const p = PRIORS[lg] || { total: 2.6, home: 0.56 };
     state.soccerLeagues[lg] = { lgH: Math.log(p.total * p.home), lgA: Math.log(p.total * (1 - p.home)), n: 0, goals: 0, homeWins: 0, draws: 0, over15: 0, over25: 0, over35: 0, btts: 0 };
   }
-  return state.soccerLeagues[lg];
+  const L = state.soccerLeagues[lg];
+  L.k1 ??= 0.30; L.k2 ??= 0.03; // gols esperados = k1 × chutes no gol + k2 × chutes para fora
+  return L;
 }
 function teamS(state, id, name) {
   state.soccerTeams[id] ??= { att: 0, def: 0, n: 0, name, last: null, form: [] };
@@ -56,6 +66,7 @@ export function soccerPredict(state, ev, rho) {
   const la = Math.exp(L.lgA + homeAdv + a.att + h.def);
   const N = 11;
   let pH = 0, pD = 0, pA = 0, btts = 0;
+  const tdist = new Array(2 * N).fill(0);
   const over = Object.fromEntries(SOCCER_LINES.map((l) => [l, 0]));
   const top = [];
   for (let i = 0; i < N; i++) {
@@ -68,6 +79,7 @@ export function soccerPredict(state, ev, rho) {
       if (i > j) pH += p; else if (i === j) pD += p; else pA += p;
       for (const l of SOCCER_LINES) if (i + j > l) over[l] += p;
       if (i > 0 && j > 0) btts += p;
+      tdist[i + j] += p;
       top.push([i, j, p]);
     }
   }
@@ -77,7 +89,7 @@ export function soccerPredict(state, ev, rho) {
     xgHome: lh, xgAway: la, total: lh + la,
     home: pH / s, draw: pD / s, away: pA / s,
     over: Object.fromEntries(Object.entries(over).map(([k, v]) => [k, v / s])),
-    btts: btts / s,
+    btts: btts / s, tdist: tdist.map((p) => p / s),
     scores: top.slice(0, 5).map(([i, j, p]) => ({ score: `${i}-${j}`, p: p / s })),
     sample: Math.min(h.n, a.n),
   };
@@ -93,8 +105,20 @@ export function soccerUpdate(state, ev) {
   const lh = Math.exp(L.lgH - homeAdv + h.att + a.def);
   const la = Math.exp(L.lgA + homeAdv + a.att + h.def);
   const gh = ev.home.score, ga = ev.away.score;
-  const lrT = (n) => Math.max(0.035, 0.22 / Math.sqrt(n + 1));
-  const eh = gh - lh, ea = ga - la;
+  const H = hyper(state, 'soccer');
+  const lrT = (n) => H.lrMul * Math.max(0.035, 0.22 / Math.sqrt(n + 1));
+  // alvo do rating: mistura do gol real com os gols esperados pelas finalizações (reduz a sorte na finalização)
+  const xg = (st) => (st?.s != null && st?.t != null ? L.k1 * st.t + L.k2 * Math.max(0, st.s - st.t) : null);
+  const xh = xg(ev.home.stats), xa = xg(ev.away.stats);
+  const th = xh == null ? gh : H.wGoal * gh + (1 - H.wGoal) * xh;
+  const ta = xa == null ? ga : H.wGoal * ga + (1 - H.wGoal) * xa;
+  if (xh != null && xa != null) {
+    for (const [g, st, x] of [[gh, ev.home.stats, xh], [ga, ev.away.stats, xa]]) {
+      L.k1 = clamp(L.k1 + 0.0008 * (g - x) * st.t, 0.15, 0.5);
+      L.k2 = clamp(L.k2 + 0.0002 * (g - x) * Math.max(0, st.s - st.t), 0, 0.08);
+    }
+  }
+  const eh = th - lh, ea = ta - la;
   h.att += lrT(h.n) * eh * 0.5; a.def += lrT(a.n) * eh * 0.5;
   a.att += lrT(a.n) * ea * 0.5; h.def += lrT(h.n) * ea * 0.5;
   for (const t of [h, a]) {
@@ -161,10 +185,19 @@ export function bbUpdate(state, ev) {
   const hb = pred.b2bHome, ab = pred.b2bAway;
   const m = ev.home.score - ev.away.score;
   const tot = ev.home.score + ev.away.score;
-  const em = clamp(m - pred.margin, -30, 30), et = clamp(tot - pred.total, -45, 45);
-  const k = (n) => Math.max(0.06, 0.3 / Math.sqrt(n + 1));
-  h.r += k(h.n) * em / 2; a.r -= k(a.n) * em / 2;
-  h.t += k(h.n) * et / 2 * 0.6; a.t += k(a.n) * et / 2 * 0.6;
+  const H = hyper(state, 'basketball');
+  // sorte no arremesso: pontos acima do esperado em 3 pts e lances livres, dado o volume de tentativas
+  L.p3 ??= 0.36; L.ft ??= 0.78;
+  const luck = (st) => (st?.pa != null && st?.ta != null ? 3 * (st.pm - st.pa * L.p3) + (st.tm - st.ta * L.ft) : 0);
+  const lh = luck(ev.home.stats), la = luck(ev.away.stats);
+  for (const st of [ev.home.stats, ev.away.stats]) if (st?.pa) { L.p3 = 0.995 * L.p3 + 0.005 * (st.pm / st.pa); if (st.ta) L.ft = 0.995 * L.ft + 0.005 * (st.tm / st.ta); }
+  const keep = H.wLuck;
+  const mAdj = m - (1 - keep) * (lh - la), totAdj = tot - (1 - keep) * (lh + la);
+  const em = clamp(m - pred.margin, -30, 30), et = clamp(tot - pred.total, -45, 45);           // erro real: desvios e médias da liga
+  const emA = clamp(mAdj - pred.margin, -30, 30), etA = clamp(totAdj - pred.total, -45, 45);  // erro sem sorte: ratings dos times
+  const k = (n) => H.kMul * Math.max(0.06, 0.3 / Math.sqrt(n + 1));
+  h.r += k(h.n) * emA / 2; a.r -= k(a.n) * emA / 2;
+  h.t += k(h.n) * etA / 2 * 0.6; a.t += k(a.n) * etA / 2 * 0.6;
   if (!ev.neutral) L.hca += 0.01 * em;
   L.avgTotal += 0.01 * et;
   if (hb || ab) { L.b2bT = clamp(L.b2bT + 0.02 * et * (hb + ab), -8, 8); L.b2bM = clamp(L.b2bM - 0.02 * em * (hb - ab), -6, 6); }
@@ -232,7 +265,7 @@ export function hockeyPredict(state, ev) {
   const out = {
     xgHome: lh, xgAway: la, total: lh + la + pT / s,
     home: (pH + pT * L.otHome) / s, away: (pA + pT * (1 - L.otHome)) / s,
-    regDraw: pT / s, over, b2bHome: hb, b2bAway: ab, gkHome: ev.feat?.gk?.home || null, gkAway: ev.feat?.gk?.away || null, gkEffect: L.gk * (xh + xa),
+    regDraw: pT / s, over, tdist: dist.map((p) => p / s), b2bHome: hb, b2bAway: ab, gkHome: ev.feat?.gk?.home || null, gkAway: ev.feat?.gk?.away || null, gkEffect: L.gk * (xh + xa),
     sample: Math.min(h.n, a.n),
   };
   if (ev.odds?.totalLine != null) out.overLine = overAt(ev.odds.totalLine);
@@ -247,10 +280,19 @@ export function hockeyUpdate(state, ev) {
   const pTie = hockeyPredict(state, ev).regDraw;
   L.tieK = clamp(L.tieK + 0.03 * ((ot ? 1 : 0) - pTie), 1, 2);
   if (ot) { if (gh > ga) gh--; else ga--; L.otHome += 0.01 * ((ev.home.score > ev.away.score ? 1 : 0) - L.otHome); }
-  const eh = gh - lh, ea = ga - la;
-  const lrT = (n) => Math.max(0.03, 0.2 / Math.sqrt(n + 1));
-  h.att += lrT(h.n) * eh * 0.5; a.def += lrT(a.n) * eh * 0.5;
-  a.att += lrT(a.n) * ea * 0.5; h.def += lrT(h.n) * ea * 0.5;
+  const H = hyper(state, 'hockey');
+  // chutes a gol de cada time = defesas do goleiro adversário + gols marcados
+  L.shPct ??= 0.095;
+  const sog = (own, oppStats) => (oppStats?.sv != null ? oppStats.sv + own : null);
+  const sh = sog(ev.home.score, ev.away.stats), sa = sog(ev.away.score, ev.home.stats);
+  const th = sh == null ? gh : H.wGoal * gh + (1 - H.wGoal) * sh * L.shPct;
+  const ta = sa == null ? ga : H.wGoal * ga + (1 - H.wGoal) * sa * L.shPct;
+  if (sh && sa) L.shPct = 0.995 * L.shPct + 0.005 * ((ev.home.score + ev.away.score) / (sh + sa));
+  const eh = gh - lh, ea = ga - la;            // erro real: médias da liga e efeitos de contexto
+  const ehA = th - lh, eaA = ta - la;          // erro sem sorte: ratings dos times
+  const lrT = (n) => H.lrMul * Math.max(0.03, 0.2 / Math.sqrt(n + 1));
+  h.att += lrT(h.n) * ehA * 0.5; a.def += lrT(a.n) * ehA * 0.5;
+  a.att += lrT(a.n) * eaA * 0.5; h.def += lrT(h.n) * eaA * 0.5;
   L.lgH += 0.01 * eh; L.lgA += 0.01 * ea;
   if (hb) L.b2b = clamp(L.b2b + 0.004 * ea, -0.3, 0.3);
   if (ab) L.b2b = clamp(L.b2b + 0.004 * eh, -0.3, 0.3);

@@ -199,7 +199,7 @@
   }
 
   function insightItem(i) {
-    const T = { contexto: 'Contexto', conhecimento: 'Conhecimento', treino: 'Treino', memoria: 'Memória', zebra: 'Total fora do esperado', sinal: 'Sinal', peso: 'Peso do modelo', limiar: 'Critério de valor', mercado: 'Mercado', estudo: 'Estudo', resultado: 'Resultados', cancelado: 'Sinal retirado', bootstrap: 'Treino', fonte: 'Fonte de dados' };
+    const T = { ajuste: 'Ajuste automático', contexto: 'Contexto', conhecimento: 'Conhecimento', treino: 'Treino', memoria: 'Memória', zebra: 'Total fora do esperado', sinal: 'Sinal', peso: 'Peso do modelo', limiar: 'Critério de valor', mercado: 'Mercado', estudo: 'Estudo', resultado: 'Resultados', cancelado: 'Sinal retirado', bootstrap: 'Treino', fonte: 'Fonte de dados' };
     return `<div class="ins" data-type="${esc(i.type)}"><span class="nd"></span><div><div class="tx">${esc(i.text)}</div>
       <div class="when"><span class="tag">${esc(T[i.type] || i.type)}</span><span>ciclo #${i.cycle}</span><span>${dt(i.t, { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</span></div></div></div>`;
   }
@@ -410,8 +410,8 @@
   };
 
   V.aprendizado = () => {
-    const types = ['all', 'contexto', 'conhecimento', 'treino', 'memoria', 'estudo', 'resultado', 'zebra', 'peso', 'limiar', 'mercado', 'sinal'];
-    const L = { all: 'Tudo', contexto: 'Desfalques e goleiros', conhecimento: 'Conhecimento', treino: 'Treinos', memoria: 'Memória', estudo: 'Estudos', resultado: 'Resultados', zebra: 'Totais fora do esperado', peso: 'Pesos', limiar: 'Critérios', mercado: 'Mercado', sinal: 'Sinais' };
+    const types = ['all', 'ajuste', 'contexto', 'conhecimento', 'treino', 'memoria', 'estudo', 'resultado', 'zebra', 'peso', 'limiar', 'mercado', 'sinal'];
+    const L = { all: 'Tudo', ajuste: 'Ajuste automático', contexto: 'Desfalques e goleiros', conhecimento: 'Conhecimento', treino: 'Treinos', memoria: 'Memória', estudo: 'Estudos', resultado: 'Resultados', zebra: 'Totais fora do esperado', peso: 'Pesos', limiar: 'Critérios', mercado: 'Mercado', sinal: 'Sinais' };
     const q = ui.insQ.toLowerCase();
     const list = D.learning.insights.filter((i) => (ui.insType === 'all' || i.type === ui.insType) && (!q || i.text.toLowerCase().includes(q))).slice().reverse();
     const st = D.ratings?.stats || {};
@@ -427,6 +427,7 @@
           <input type="search" id="ins-q" placeholder="Buscar time, liga, mercado…" value="${esc(ui.insQ)}"></div>
           <div class="timeline">${list.slice(0, 300).map(insightItem).join('') || '<div class="note">Nada encontrado.</div>'}</div></div>
         <div class="grid" style="align-content:start">
+          ${tuningPanel()}
           ${knowledgePanel()}
           <div class="panel"><div class="panel-h"><h3>Peso do modelo próprio</h3><span class="meta">o restante vem do mercado</span></div><div class="chart-box" style="height:220px"><canvas id="ch-blend"></canvas></div></div>
           <div class="panel"><div class="panel-h"><h3>Parâmetros atuais</h3></div><div class="table-wrap"><table><thead><tr><th>Mercado</th><th class="n">Peso IA</th><th class="n">EV mín.</th><th class="n">Jogos</th></tr></thead><tbody>
@@ -436,6 +437,23 @@
         </div>
       </div>`;
   };
+
+  function tuningPanel() {
+    const T = D.meta?.tuning || {}, H = D.meta?.hyper || {};
+    const NAME = { lrMul: 'Velocidade de aprendizado', kMul: 'Velocidade de aprendizado', wGoal: 'Peso do gol real', wLuck: 'Sorte no arremesso mantida' };
+    const rows = Object.entries(SPORTS).filter(([sp]) => sportOk(sp)).map(([sp, nm]) => {
+      const t = T[sp];
+      if (!t) return `<tr><td>${nm}</td><td colspan="4" class="note">Aguardando a memória completa deste esporte.</td></tr>`;
+      const gain = (t.base.ll - t.best.ll) / t.base.ll;
+      const hp = H[sp] || t.best.hp;
+      return `<tr><td>${nm}<div class="note">${t.games.toLocaleString('pt-BR')} jogos · ${t.withStats.toLocaleString('pt-BR')} com estatísticas</div></td>
+        <td>${Object.entries(hp).map(([k, v]) => `${NAME[k]}: <b class="mono">${v}</b>`).join('<br>')}</td>
+        <td class="n">${t.best.mae.toFixed(2)}</td><td class="n ${gain > 0 ? 'pos' : ''}">${gain > 0 ? '−' + (gain * 100).toFixed(2) + '%' : '0%'}</td><td class="mono" style="font-size:12px">${ago(t.at)}</td></tr>`;
+    }).join('');
+    return `<div class="panel"><div class="panel-h"><h3>Ajuste automático</h3><span class="meta">melhor combinação de parâmetros na memória</span></div>
+      <div class="table-wrap"><table><thead><tr><th>Esporte</th><th>Parâmetros escolhidos</th><th class="n">Erro médio do total</th><th class="n">vs padrão</th><th>Quando</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <p class="note">A IA reaprende a memória com várias combinações e mede o erro do total só nos 40% de jogos mais recentes, que ela ainda não tinha visto. Fica com a combinação que erra menos e repete o teste 1 vez por dia.${D.meta?.statsPendingDays ? ` Ainda faltam estatísticas de ${D.meta.statsPendingDays} dias antigos; até lá o peso das finalizações é testado só nos jogos recentes.` : ''}</p></div>`;
+  }
 
   function knowledgePanel() {
     const K = D.ratings?.knowledge?.leagues || {}, M = D.meta?.memory || {};
@@ -497,6 +515,8 @@
       <p><b>Basquete:</b> rating de margem e de ritmo por time, vantagem de mando por liga e desvio-padrão aprendido. Margem e total projetados viram probabilidades pela distribuição normal, para vencedor, spread e total.</p>
       <p><b>Hóquei (NHL):</b> Poisson para os gols do tempo normal de cada time. Empate no tempo normal leva a prorrogação/shootout e soma exatamente 1 gol ao total, como as casas contam. A IA também mede quanto um back-to-back muda os gols sofridos.</p>
       <p><b>Memória e conhecimento:</b> todos os jogos encerrados desde a temporada passada ficam guardados em <code>docs/data/history/</code>. A IA começa com princípios de mercado e médias conhecidas de cada liga, substitui tudo pelo que mede nos dados e se retreina do zero quando a memória completa.</p>
+      <p><b>Finalizações e sorte:</b> gol é raro e tem muita sorte; quem cria chances continua criando. Por isso os ratings aprendem com uma mistura do placar com os gols esperados pelas finalizações (chutes e chutes no gol no futebol, chutes a gol no hóquei). No basquete, a IA desconta a sorte no aproveitamento de 3 pontos e de lances livres.</p>
+      <p><b>Ajuste automático:</b> 1 vez por dia, a IA testa várias combinações de parâmetros reaprendendo toda a memória e mede o erro do total nos jogos mais recentes, que ela não tinha visto. Fica com a combinação que erra menos.</p>
       <p><b>Mercado:</b> a probabilidade justa da casa é obtida removendo a margem. A probabilidade final mistura modelo e mercado com um peso que a própria IA ajusta.</p>
       <h3>Quando sai um sinal</h3>
       <p>Valor esperado = probabilidade × odd − 1. O sinal sai em linhas .5 quando o EV passa do mínimo do mercado e a odd está entre 1,40 e 3,20. A stake é ¼ de Kelly, com teto de 3%. A odd do sinal fica registrada no momento da emissão e todo sinal emitido conta no desempenho. A IA acompanha a odd até o início do jogo para medir o CLV (se você pegou preço melhor que o de fechamento). O sinal é liquidado automaticamente pelo placar final.</p>

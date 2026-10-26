@@ -43,6 +43,15 @@ function parseOdds(comp) {
   return res;
 }
 
+// estatísticas do jogo usadas pelos ratings (finalizações, arremessos, defesas)
+const STAT_KEYS = { totalShots: 's', shotsOnTarget: 't', fieldGoalsAttempted: 'fa', freeThrowsAttempted: 'ta', freeThrowsMade: 'tm',
+  threePointFieldGoalsAttempted: 'pa', threePointFieldGoalsMade: 'pm', saves: 'sv' };
+export function gameStats(c) {
+  const out = {};
+  for (const s of c.statistics || []) if (STAT_KEYS[s.name]) { const v = parseFloat(s.displayValue); if (isFinite(v)) out[STAT_KEYS[s.name]] = v; }
+  return Object.keys(out).length ? out : null;
+}
+
 function team(c) {
   const rec = c.records?.find((r) => r.type === 'total' || r.name === 'overall') || c.records?.[0];
   return {
@@ -55,6 +64,7 @@ function team(c) {
     score: c.score !== undefined && c.score !== '' ? Number(c.score) : null,
     form: c.form || null,
     record: rec?.summary || null,
+    stats: gameStats(c),
     goalie: (() => { const g = c.probables?.find((p) => p.name === 'probableStartingGoalie'); return g?.athlete ? { id: g.athlete.id, name: g.athlete.displayName, status: g.status?.name || '' } : null; })(),
   };
 }
@@ -100,7 +110,7 @@ async function getJSON(url, tries = 2) {
       const r = await fetch(url, { headers: { 'user-agent': 'OddLab-IA/1.0 (+github.com/oddlab-ia)' } });
       if (r.ok) { await sleep(250); return await r.json(); }
       if (r.status === 403 || r.status === 429) { source.blocked = true; return null; }
-      if (r.status === 400 || r.status === 404) return null;
+      if (r.status === 400 || r.status === 404) return { events: [] }; // dia sem jogos para essa liga
     } catch {}
     source.errors++;
     await sleep(1500 * (i + 1));
