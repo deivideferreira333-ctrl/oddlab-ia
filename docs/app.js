@@ -199,7 +199,7 @@
   }
 
   function insightItem(i) {
-    const T = { conhecimento: 'Conhecimento', treino: 'Treino', memoria: 'Memória', zebra: 'Total fora do esperado', sinal: 'Sinal', peso: 'Peso do modelo', limiar: 'Critério de valor', mercado: 'Mercado', estudo: 'Estudo', resultado: 'Resultados', cancelado: 'Sinal retirado', bootstrap: 'Treino', fonte: 'Fonte de dados' };
+    const T = { contexto: 'Contexto', conhecimento: 'Conhecimento', treino: 'Treino', memoria: 'Memória', zebra: 'Total fora do esperado', sinal: 'Sinal', peso: 'Peso do modelo', limiar: 'Critério de valor', mercado: 'Mercado', estudo: 'Estudo', resultado: 'Resultados', cancelado: 'Sinal retirado', bootstrap: 'Treino', fonte: 'Fonte de dados' };
     return `<div class="ins" data-type="${esc(i.type)}"><span class="nd"></span><div><div class="tx">${esc(i.text)}</div>
       <div class="when"><span class="tag">${esc(T[i.type] || i.type)}</span><span>ciclo #${i.cycle}</span><span>${dt(i.t, { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</span></div></div></div>`;
   }
@@ -209,6 +209,7 @@
     const a = ev.analysis;
     const isLive = ev.state === 'in';
     const hasSig = D.signals.some((s) => s.eventId === ev.id && ['aberto', 'travado'].includes(s.status));
+    const ctxTag = ev.feat?.miss && (ev.feat.miss.home + ev.feat.miss.away) >= 8 ? '<span style="color:var(--warn)">● desfalques</span>' : ev.feat?.gk ? `<span style="color:var(--hockey)">● goleiros ${Object.values(ev.feat.gk).every((g) => /conf/i.test(g.status)) ? 'confirmados' : 'prováveis'}</span>` : '';
     let tri = '';
     if (a) {
       const p = a.pred;
@@ -220,7 +221,7 @@
     const when = isLive ? `<span class="live-tag">AO VIVO</span><b>${esc(ev.detail || '')}</b>` : ev.completed ? `<span>Encerrado</span><b>${hm(ev.date)}</b>` : `<span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(ev.leagueName)}</span><b>${hm(ev.date)}</b>`;
     const sc = (t) => (ev.state !== 'pre' && t.score != null ? `<span class="s">${t.score}</span>` : '');
     return `<button class="game" data-open="${esc(ev.id)}">
-      <div class="when">${when}${hasSig ? '<span style="color:var(--accent)">● sinal</span>' : ''}</div>
+      <div class="when">${when}${hasSig ? '<span style="color:var(--accent)">● sinal</span>' : ''}${ctxTag}</div>
       <div class="teams">
         <div class="row">${crest(ev.home.logo, ev.home.name)}<span>${esc(ev.home.name)}</span>${sc(ev.home)}</div>
         <div class="row">${crest(ev.away.logo, ev.away.name)}<span>${esc(ev.away.name)}</span>${sc(ev.away)}</div>
@@ -250,6 +251,8 @@
         + (best.ev > 0 && (best.odd > 3.2 || best.odd < 1.4) ? ' Essa odd fica fora da faixa aceita para sinal (1,40 a 3,20), então não vira entrada.' : '')
         : `Total sem valor: o mercado está alinhado com a IA (diferença ${sgn(diff * 100, 1)} p.p.). Sem entrada também é uma decisão.`);
     } else out.push('O provedor ainda não publicou odds para este jogo; a IA mostra apenas as odds justas.');
+    if (ev.feat?.miss && (ev.feat.miss.home + ev.feat.miss.away) >= 5) out.push(`Desfalques somam ${(ev.feat.miss.home + ev.feat.miss.away).toFixed(1)} pts por jogo ponderados; total ajustado em ${sgn(p.injTotal, 1)} pts.`);
+    if (ev.feat?.gk) out.push(`Goleiros: ${['home', 'away'].filter((sd) => ev.feat.gk[sd]).map((sd) => `${ev.feat.gk[sd].name} (${/conf/i.test(ev.feat.gk[sd].status) ? 'confirmado' : 'provável'})`).join(' × ')}.`);
     if (p.sample < 6) out.push(`Atenção: uma das equipes tem só ${p.sample} jogos na base, então a confiança é menor.`);
     const o = ev.odds;
     if (o?.homeOpen && o?.home && Math.abs(1 / o.homeOpen - 1 / o.home) >= 0.03) out.push(`A linha do mandante se moveu de ${odd(o.homeOpen)} para ${odd(o.home)} desde a abertura.`);
@@ -289,6 +292,17 @@
     const form = (t) => (t.form ? `<span class="form">${[...t.form].map((f) => `<i class="${f}">${f === 'W' ? 'V' : f === 'L' ? 'D' : 'E'}</i>`).join('')}</span>` : '<span class="note">—</span>');
     body += `<div class="panel section-gap"><div class="panel-h"><h3>Forma recente</h3><span class="meta">últimos 5, ESPN</span></div>
       <div style="display:grid;gap:10px"><div style="display:flex;justify-content:space-between;gap:8px"><b>${esc(ev.home.name)}</b>${form(ev.home)}</div><div style="display:flex;justify-content:space-between;gap:8px"><b>${esc(ev.away.name)}</b>${form(ev.away)}</div></div></div>`;
+    const f = ev.feat;
+    if (f?.inj) {
+      const col = (sd) => `<div><b>${esc(ev[sd].name)}</b>${(f.inj[sd] || []).length ? `<div class="table-wrap"><table><tbody>${f.inj[sd].map((x) => `<tr><td>${esc(x.name)}<div class="note">${x.status === 'Out' ? 'Fora' : x.status === 'Day-To-Day' ? 'Dúvida (dia a dia)' : esc(x.status)}</div></td><td class="n">${x.pts.toFixed(1)} pts</td><td class="n" title="peso no ajuste">${Math.round(x.w * 100)}%</td></tr>`).join('')}</tbody></table></div>` : '<div class="note">Sem desfalques relevantes.</div>'}</div>`;
+      body += `<div class="panel section-gap"><div class="panel-h"><h3>Desfalques</h3><span class="meta">ajuste no total: ${p?.injTotal != null ? sgn(p.injTotal, 1) + ' pts' : '—'}</span></div><div class="cols-2e">${col('home')}${col('away')}</div>
+        <p class="note">Peso = status (fora ou dúvida) × quanto o rating do time ainda não absorveu a ausência. Depois de ~15 jogos sem o jogador, o próprio rating já reflete a falta dele.</p></div>`;
+    }
+    if (f?.gk) {
+      const g = (sd) => { const x = f.gk[sd]; return x ? `<div class="mini"><div class="lbl">${esc(ev[sd].short || ev[sd].name)} · ${/conf/i.test(x.status) ? 'confirmado' : 'provável'}</div><div class="val" style="font-size:15px">${esc(x.name)}</div><div class="note">SV% ajustado ${x.sv ? (x.sv * 100).toFixed(1) : '—'}</div></div>` : ''; };
+      body += `<div class="panel section-gap"><div class="panel-h"><h3>Goleiros titulares</h3><span class="meta">efeito nos gols: ${p?.gkEffect != null ? sgn(p.gkEffect * 100, 1) + '%' : '—'}</span></div><div class="mini-grid">${g('home')}${g('away')}</div>
+        <p class="note">SV% da temporada combinado com o da carreira, para não superestimar goleiros com poucos jogos. Goleiro pior que a média aumenta os gols esperados do adversário.</p></div>`;
+    }
     if (sigs.length) body += `<div class="section-gap"><div class="signals">${sigs.map(sigCard).join('')}</div></div>`;
     $('#drawer-root').innerHTML = `<div class="drawer-back" data-close></div><aside class="drawer" role="dialog" aria-modal="true" aria-label="Análise da partida">
       <button class="icon-btn close" data-close aria-label="Fechar">✕</button>
@@ -396,8 +410,8 @@
   };
 
   V.aprendizado = () => {
-    const types = ['all', 'conhecimento', 'treino', 'memoria', 'estudo', 'resultado', 'zebra', 'peso', 'limiar', 'mercado', 'sinal'];
-    const L = { all: 'Tudo', conhecimento: 'Conhecimento', treino: 'Treinos', memoria: 'Memória', estudo: 'Estudos', resultado: 'Resultados', zebra: 'Totais fora do esperado', peso: 'Pesos', limiar: 'Critérios', mercado: 'Mercado', sinal: 'Sinais' };
+    const types = ['all', 'contexto', 'conhecimento', 'treino', 'memoria', 'estudo', 'resultado', 'zebra', 'peso', 'limiar', 'mercado', 'sinal'];
+    const L = { all: 'Tudo', contexto: 'Desfalques e goleiros', conhecimento: 'Conhecimento', treino: 'Treinos', memoria: 'Memória', estudo: 'Estudos', resultado: 'Resultados', zebra: 'Totais fora do esperado', peso: 'Pesos', limiar: 'Critérios', mercado: 'Mercado', sinal: 'Sinais' };
     const q = ui.insQ.toLowerCase();
     const list = D.learning.insights.filter((i) => (ui.insType === 'all' || i.type === ui.insType) && (!q || i.text.toLowerCase().includes(q))).slice().reverse();
     const st = D.ratings?.stats || {};
@@ -430,7 +444,7 @@
     return `<div class="panel"><div class="panel-h"><h3>Base de conhecimento</h3><span class="meta">${D.meta?.fullyTrained ? 'memória completa' : 'memória sendo coletada'}</span></div>
       <div class="table-wrap"><table><thead><tr><th>Liga</th><th class="n">Jogos</th><th class="n">Média</th><th>Totais</th><th style="min-width:70px">Memória</th></tr></thead><tbody>
       ${lgs.map((l) => { const k = K[l.slug], m = M[l.slug]; return `<tr><td>${esc(l.name)}</td><td class="n">${m?.games ?? 0}</td><td class="n">${k ? k.avg : '—'}</td><td class="mono" style="font-size:12px">${cell(k)}</td><td><div class="meter" title="${pct(m?.pct ?? 0, 0)}"><i style="width:${((m?.pct ?? 0) * 100).toFixed(0)}%"></i></div></td></tr>`; }).join('')}
-      </tbody></table></div><p class="note">Estatísticas medidas em todos os jogos guardados de cada liga. A memória é baixada aos poucos da ESPN e, quando completa, a IA se retreina inteira em ordem cronológica.</p></div>`;
+      </tbody></table></div><p class="note">${(D.meta?.memoryWithOdds ?? 0).toLocaleString('pt-BR')} jogos já têm odds de fechamento guardadas, base do backtest real na aba Desempenho. Estatísticas medidas em todos os jogos guardados de cada liga. A memória é baixada aos poucos da ESPN e, quando completa, a IA se retreina inteira em ordem cronológica.</p></div>`;
   }
 
   V.ratings = () => {

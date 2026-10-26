@@ -31,23 +31,38 @@ export function saveHistories() {
   }
 }
 
-// formato compacto: [id, data, idCasa, nomeCasa, idFora, nomeFora, golsCasa, golsFora, prorrogação(0/1), neutro(0/1)]
-export function addGame(ev) {
+// formato compacto: [id, data, idCasa, nomeCasa, idFora, nomeFora, golsCasa, golsFora, prorrogação(0/1), neutro(0/1), oddsFechamento|0, contexto|0]
+const ODD_KEYS = ['home', 'away', 'draw', 'totalLine', 'over', 'under', 'spreadHome', 'spreadHomeOdd', 'spreadAwayOdd', 'provider'];
+export function compactOdds(o) {
+  if (!o) return 0;
+  const out = {};
+  for (const k of ODD_KEYS) if (o[k] != null) out[k] = o[k];
+  return Object.keys(out).length ? out : 0;
+}
+export function compactFeat(f) {
+  if (!f) return 0;
+  const out = {};
+  if (f.miss) out.miss = f.miss;
+  if (f.gk) out.gk = Object.fromEntries(Object.entries(f.gk).map(([k, g]) => [k, { sv: g.sv }]));
+  return Object.keys(out).length ? out : 0;
+}
+
+export function addGame(ev, { odds = null, feat = null } = {}) {
   if (!ev.completed || ev.home.score == null || ev.away.score == null) return false;
   const h = loadHistory(ev.league);
   if (h._ids.has(ev.id)) return false;
   const ot = /OT|SO/i.test(ev.detail || '') || (ev.sport === 'hockey' && (ev.period || 0) > 3) ? 1 : 0;
-  h.games.push([ev.id, ev.date, ev.home.id, ev.home.name, ev.away.id, ev.away.name, ev.home.score, ev.away.score, ot, ev.neutral ? 1 : 0]);
+  h.games.push([ev.id, ev.date, ev.home.id, ev.home.name, ev.away.id, ev.away.name, ev.home.score, ev.away.score, ot, ev.neutral ? 1 : 0, compactOdds(odds), compactFeat(feat)]);
   h._ids.add(ev.id);
   h._dirty = true;
   return true;
 }
 
 export function toEvent(g, lg) {
-  const [id, date, hid, hname, aid, aname, hs, as, ot, neutral] = g;
+  const [id, date, hid, hname, aid, aname, hs, as, ot, neutral, odds, feat] = g;
   return {
     id, sport: lg.sport, league: lg.slug, leagueName: lg.name, date, completed: true, state: 'post',
-    detail: ot ? 'Final/OT' : 'Final', period: ot ? 4 : 3, neutral: !!neutral, odds: null,
+    detail: ot ? 'Final/OT' : 'Final', period: ot ? 4 : 3, neutral: !!neutral, odds: odds || null, feat: feat || null,
     home: { id: hid, name: hname, score: hs }, away: { id: aid, name: aname, score: as },
   };
 }
@@ -84,7 +99,7 @@ export function coverage(leagues) {
   return Object.fromEntries(leagues.map((lg) => {
     const h = loadHistory(lg.slug);
     const pending = pendingDays(lg).length;
-    return [lg.slug, { games: h.games.length, pct: +(h._days.size / Math.max(1, h._days.size + pending)).toFixed(3), pending }];
+    return [lg.slug, { games: h.games.length, withOdds: h.games.filter((g) => g[10]).length, pct: +(h._days.size / Math.max(1, h._days.size + pending)).toFixed(3), pending }];
   }));
 }
 

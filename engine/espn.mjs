@@ -55,6 +55,7 @@ function team(c) {
     score: c.score !== undefined && c.score !== '' ? Number(c.score) : null,
     form: c.form || null,
     record: rec?.summary || null,
+    goalie: (() => { const g = c.probables?.find((p) => p.name === 'probableStartingGoalie'); return g?.athlete ? { id: g.athlete.id, name: g.athlete.displayName, status: g.status?.name || '' } : null; })(),
   };
 }
 

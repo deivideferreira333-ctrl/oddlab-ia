@@ -9,6 +9,7 @@ import { fetchWindow, ymd, source } from './espn.mjs';
 import { loadAll, saveAll, analyze, bestSignals, baseSignal, learnFromResult, snapshot, DATA_DIR } from './brain.mjs';
 import { addGame, collectHistory, saveHistories, coverage, isComplete, loadHistory, toEvent } from './history.mjs';
 import { PRINCIPLES, buildKnowledge, knowledgeInsights } from './knowledge.mjs';
+import { gatherContext } from './context.mjs';
 
 const pct = (x, d = 0) => `${(x * 100).toFixed(d)}%`;
 const DAY = 864e5;
@@ -93,6 +94,9 @@ function studyNotes(state) {
 // retreino: zera os modelos dos esportes envolvidos e reaprende toda a memória em ordem cronológica
 function retrain(ctx, leagues) {
   const { state } = ctx;
+  // jogos com odds de fechamento na memória viram backtest real (modelo só com o que sabia antes do jogo)
+  const slugs = new Set(leagues.map((l) => l.slug));
+  ctx.backtest = ctx.backtest.filter((s) => !slugs.has(s.league));
   const sports = new Set(leagues.map((l) => l.sport));
   if (sports.has('soccer')) { state.soccerLeagues = {}; state.soccerTeams = {}; }
   if (sports.has('basketball')) { state.bbLeagues = {}; state.bbTeams = {}; }
@@ -103,7 +107,7 @@ function retrain(ctx, leagues) {
   games.sort((a, b) => a.date.localeCompare(b.date));
   const ids = new Set(games.map((e) => e.id));
   for (const id of Object.keys(state.processed)) if (ids.has(id)) delete state.processed[id];
-  for (const ev of games) learnFromResult(ctx, ev);
+  for (const ev of games) learnFromResult(ctx, ev, { backtest: !!ev.odds });
   return games.length;
 }
 
@@ -141,8 +145,9 @@ export async function runCycle({ log = console.log, budget = HISTORY_BUDGET } = 
 
   // 2) resultados novos: memória permanente + aprendizado (ligas ainda sem treino só guardam)
   const learned = [];
+  state.featMemo ??= {};
   for (const ev of events.filter((e) => e.completed && e.home.score != null)) {
-    addGame(ev);
+    addGame(ev, { odds: state.oddsMemo[ev.id], feat: state.featMemo[ev.id] });
     if (!state.trainedLeagues.includes(ev.league)) continue;
     const r = learnFromResult(ctx, ev);
     if (r) learned.push(r);
@@ -201,7 +206,9 @@ export async function runCycle({ log = console.log, budget = HISTORY_BUDGET } = 
   // sinais ainda abertos em mercados fora do foco são retirados (não contam no desempenho)
   for (const s of ctx.signals) if (s.status === 'aberto' && !SIGNAL_MARKETS.includes(s.marketKey)) { s.status = 'cancelado'; s.note = 'mercado fora do foco'; s.updatedAt = new Date().toISOString(); }
 
-  // 7) analisar jogos futuros/ao vivo e gerenciar sinais
+  // 7) contexto pré-jogo (desfalques e goleiros) e análise dos jogos futuros/ao vivo
+  const feats = await gatherContext(state, events, log);
+  for (const ev of events) if (feats[ev.id]) { ev.feat = feats[ev.id]; state.featMemo[ev.id] = feats[ev.id]; }
   const feed = [];
   const now = new Date().toISOString();
   for (const ev of events) {
@@ -227,6 +234,21 @@ export async function runCycle({ log = console.log, budget = HISTORY_BUDGET } = 
         fresh.push(['mercado', `Linha de total moveu em ${ev.home.name} × ${ev.away.name}: ${prevLine} → ${ev.odds.totalLine}. Projeção da IA: ${an.pred.total.toFixed(2)}.`]);
         state.lastLogged['line:' + ev.id] = cycle;
       }
+      // lições de contexto: desfalques relevantes e goleiros abaixo da média
+      const f = ev.feat;
+      if (f?.miss && (f.miss.home + f.miss.away) >= 12 && !state.lastLogged['inj:' + ev.id]) {
+        const who = ['home', 'away'].flatMap((sd) => (f.inj[sd] || []).filter((x) => x.w >= 0.5).slice(0, 2).map((x) => `${x.name} (${ev[sd].short || ev[sd].name}, ${x.pts.toFixed(1)} pts, ${x.status === 'Out' ? 'fora' : 'dúvida'})`));
+        fresh.push(['contexto', `Desfalques em ${ev.home.name} × ${ev.away.name}: ${who.join('; ')}. A IA ajustou o total projetado em ${an.pred.injTotal >= 0 ? '+' : ''}${an.pred.injTotal.toFixed(1)} pts.`]);
+        state.lastLogged['inj:' + ev.id] = cycle;
+      }
+      if (f?.gk && !state.lastLogged['gk:' + ev.id]) {
+        const L = state.hkLeagues[ev.league];
+        const weak = ['home', 'away'].map((sd) => [sd, f.gk[sd]]).filter(([, g]) => g?.sv && g.sv < (L?.svAvg ?? 0.9) - 0.008);
+        if (weak.length) {
+          fresh.push(['contexto', `Goleiro abaixo da média em ${ev.home.name} × ${ev.away.name}: ${weak.map(([sd, g]) => `${g.name} (${ev[sd].short || ev[sd].name}, SV% ajustado ${(g.sv * 100).toFixed(1)}, ${/conf/i.test(g.status) ? 'confirmado' : 'provável'})`).join('; ')}. Gols esperados do adversário aumentados.`]);
+          state.lastLogged['gk:' + ev.id] = cycle;
+        }
+      }
       snap = state.snapshots[ev.id] = snapshot(ev, an, sigs);
       if (ev.odds) state.oddsMemo[ev.id] = { ...ev.odds, at: now };
     } else if (ev.state !== 'pre') {
@@ -247,8 +269,10 @@ export async function runCycle({ log = console.log, budget = HISTORY_BUDGET } = 
   const cutoff = Date.now() - 400 * DAY;
   for (const [k, d] of Object.entries(state.processed)) if (Date.parse(d) < cutoff) delete state.processed[k];
   for (const k of Object.keys(state.snapshots)) if (!feed.find((e) => e.id === k)) delete state.snapshots[k];
-  for (const [k, o] of Object.entries(state.oddsMemo)) if (state.processed[k] || Date.parse(o.at) < Date.now() - 10 * DAY) delete state.oddsMemo[k];
-  for (const k of Object.keys(state.lastLogged)) if (/^(move|line):/.test(k) && cycle - state.lastLogged[k] > 600) delete state.lastLogged[k];
+  for (const [k, o] of Object.entries(state.oddsMemo)) if (state.processed[k] || Date.parse(o.at) < Date.now() - 10 * DAY) { delete state.oddsMemo[k]; delete state.featMemo[k]; }
+  for (const k of Object.keys(state.featMemo)) if (state.processed[k]) delete state.featMemo[k];
+  for (const [k, p] of Object.entries(state.players || {})) if (Date.parse(p.at) < Date.now() - 30 * DAY) delete state.players[k];
+  for (const k of Object.keys(state.lastLogged)) if (/^(move|line|inj|gk):/.test(k) && cycle - state.lastLogged[k] > 600) delete state.lastLogged[k];
 
   // 10) parâmetros e saídas para o site
   ctx.learning.params.push({ t: now, cycle, blend: { ...state.learned.blend }, minEV: { ...state.learned.minEV },
@@ -274,6 +298,7 @@ export async function runCycle({ log = console.log, budget = HISTORY_BUDGET } = 
     teamsKnown: Object.keys(state.soccerTeams).length + Object.keys(state.bbTeams).length + Object.keys(state.hkTeams || {}).length,
     gamesLearned: state.totalLearned || Object.keys(state.processed).length,
     memoryGames: Object.values(cov).reduce((a, c) => a + c.games, 0),
+    memoryWithOdds: Object.values(cov).reduce((a, c) => a + (c.withOdds || 0), 0),
     memory: cov, trainedLeagues: state.trainedLeagues, fullyTrained: state.trainedVersion === MODEL_VERSION,
     leagues: LEAGUES, created: state.created,
   };

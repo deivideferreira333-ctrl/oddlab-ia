@@ -231,6 +231,7 @@ export function learnFromResult(ctx, ev, { backtest = false } = {}) {
   if (state.processed[ev.id]) return null;
   // jogos encerrados perdem as odds no placar da ESPN: usa as odds pré-jogo memorizadas
   if (!ev.odds && state.oddsMemo?.[ev.id]) ev = { ...ev, odds: state.oddsMemo[ev.id] };
+  if (!ev.feat && state.featMemo?.[ev.id]) ev = { ...ev, feat: state.featMemo[ev.id] };
   const an = analyze(state, ev);
   let blendChanges = [];
   if (ev.odds) blendChanges = learnBlend(state, ev, an);

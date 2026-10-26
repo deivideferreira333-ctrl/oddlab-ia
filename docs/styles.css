@@ -231,6 +231,7 @@ tr:hover td { background: color-mix(in srgb, var(--surface-2) 60%, transparent);
 .ins[data-type="peso"] .nd, .ins[data-type="limiar"] .nd { background: var(--soccer); }
 .ins[data-type="mercado"] .nd { background: var(--bball); }
 .ins[data-type="estudo"] .nd { background: var(--muted); }
+.ins[data-type="contexto"] .nd { background: var(--warn); }
 .ins[data-type="conhecimento"] .nd, .ins[data-type="treino"] .nd, .ins[data-type="memoria"] .nd { background: var(--hockey); }
 .ins .tx { font-size: 14px; line-height: 1.55; max-width: 78ch; }
 .ins .when { font: 600 11px var(--f-mono); color: var(--faint); margin-top: 3px; display: flex; gap: 10px; flex-wrap: wrap; }
