@@ -5,7 +5,7 @@ name: IA - ciclo de aprendizado
 on:
   schedule:
     # minutos fora da virada da hora: o GitHub atrasa ou descarta mais execuções em :00, :10, :20...
-    - cron: '3,13,23,33,43,53 * * * *'
+    - cron: '4,14,24,34,44,54 * * * *'
   workflow_dispatch:
 
 permissions:
