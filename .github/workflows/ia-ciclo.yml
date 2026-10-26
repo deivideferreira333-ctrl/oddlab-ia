@@ -1,0 +1,35 @@
+# Roda o ciclo da IA a cada 10 minutos e salva o cérebro, os sinais e as lições no próprio repositório.
+# O GitHub Pages publica a pasta docs/, então o site online se atualiza sozinho.
+name: IA - ciclo de aprendizado
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ia-ciclo
+  cancel-in-progress: false
+
+jobs:
+  ciclo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Executar ciclo da IA
+        run: node engine/cycle.mjs
+      - name: Salvar aprendizado
+        run: |
+          git config user.name "oddlab-ia"
+          git config user.email "oddlab-ia@users.noreply.github.com"
+          git add docs/data
+          git diff --cached --quiet || git commit -m "IA: ciclo $(date -u +%Y-%m-%dT%H:%MZ)"
+          git pull --rebase --autostash || true
+          git push

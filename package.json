@@ -1,0 +1,13 @@
+{
+  "name": "oddlab-ia",
+  "version": "1.0.0",
+  "description": "OddLab IA — análise e sinais de futebol e basquete com dados da ESPN e aprendizado contínuo",
+  "type": "module",
+  "private": true,
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node server.mjs",
+    "cycle": "node engine/cycle.mjs",
+    "bootstrap": "node engine/cycle.mjs --bootstrap"
+  }
+}
